@@ -54,16 +54,56 @@ normalen Call-Stacks aufzurufen.
 
 ## Offene Reverse-Engineering-Frage
 
-Wie genau SCUMs interner Admin-Befehls-Dispatcher aufgerufen wird, ist noch nicht bekannt
-— das ist der nächste, eigenständige Arbeitsschritt. Ansatzpunkte:
+Wie genau SCUMs interner Admin-Befehls-Dispatcher aufgerufen wird, war zu Beginn dieser
+Phase noch unbekannt. Ein erster, rein lesender String-Scan direkt gegen die
+`SCUMServer.exe` (kein Deploy, kein Prozesseingriff — siehe `docs/CHANGELOG.md`,
+Eintrag "Erste Reverse-Engineering-Ergebnisse") hat das Bild deutlich geschärft:
 
-1. UE4SS bietet bereits fertige, aber ungenutzte Hookpunkte für Konsolenbefehle
-   (`ProcessConsoleExec`, `ULocalPlayerExec`) — plausibelster erster Versuch, da
-   Admin-Konsolenbefehle wahrscheinlich genau dort durchlaufen.
-2. Falls das nicht ausreicht: Array-of-Bytes-Scan (Signature Scanning) nach dem
-   internen Autorisierungs-Gate, analog zum öffentlich beschriebenen Konzept aus
-   `DeveloperMode`s README — eigenständig gegen den SCUM-Serverprozess selbst neu
-   implementiert.
+**Bestätigt per Reflection-Metadaten im Binary:**
+
+- SCUMs Admin-Befehle sind **keine Freiform-Funktionen**, sondern 247 einzelne
+  UE-Reflection-Klassen nach dem Muster `UAdminCommand_<Name>` (z. B.
+  `UAdminCommand_ListPlayers`, `UAdminCommand_SetGodMode`,
+  `UAdminCommand_ExecuteConsoleCommand`) — vermutlich ein Command-Pattern, bei dem
+  jede Klasse ihre eigene Ausführungslogik kapselt.
+- Drei Infrastruktur-Klassen sind die wahrscheinlichsten Kandidaten für den
+  eigentlichen Dispatch-Mechanismus:
+  - `UAdminCommandRegistry` — bildet vermutlich Befehlsnamen (Text nach `#`) auf die
+    passende `UAdminCommand_*`-Klasse ab.
+  - `UAdminCommandExecutor` — vermutlich das Kontext-/Berechtigungsobjekt, das beim
+    Ausführen mitgegeben wird (repräsentiert den Aufrufer: Spieler, Konsole, o. ä.).
+  - `UAdminCommandsStatics` — vermutlich eine Blueprint-Function-Library mit
+    aufrufbaren statischen Helfern.
+- Die Autorisierungs-Strings liegen exakt in der von `DeveloperMode`s README
+  beschriebenen Reihenfolge im Speicher: "Command is disabled" → "...in shipping
+  build" → **"Player must be developer"** → "...on cooldown..." → **"Not authorized
+  to execute command"** — bestätigt mindestens zwei getrennte Prüfungen vor der
+  eigentlichen Ausführung.
+
+**Was reines String-Scanning nicht mehr liefert:** die tatsächlichen `UFunction`-
+Signaturen dieser drei Klassen (Namen, Parameter, welche Funktion man per
+`ProcessEvent` aufrufen müsste) — C++-Methodennamen sind in einem Shipping-Build
+nicht als Strings vorhanden, nur Klassen-/Property-Namen (FName-Metadaten).
+
+**Nächste Schritte, in Reihenfolge:**
+
+1. Live-Reflection-Dump der drei Klassen (`UAdminCommandExecutor`,
+   `UAdminCommandRegistry`, `UAdminCommandsStatics`) — entweder über UE4SS' eingebautes
+   `DumpAllObjects()` (dafür existiert im privaten Schwesterprojekt bereits ein
+   fertiger, bisher ungenutzter Mod `PowelsScumSdkDump`) oder eine gezielte, neue
+   `StaticFindObject<UClass*>`-Abfrage. **Beides braucht einen Serverneustart auf
+   einem Testserver** — noch nicht ausgeführt, wartet auf explizite Freigabe.
+2. Sobald die Funktionssignaturen bekannt sind: prüfen, ob sich ein valider
+   `UAdminCommandExecutor` synthetisch erzeugen oder aus einem bestehenden Kontext
+   (z. B. dem Server selbst, analog zu "kein Admin-Client nötig") ableiten lässt.
+3. Falls die Reflection-Ebene allein nicht reicht (z. B. weil die Autorisierungsprüfung
+   nicht rein über Parameter, sondern über zusätzliche interne Zustandsprüfungen läuft):
+   Array-of-Bytes-Scan auf die beiden Autorisierungs-Gates als Fallback, analog zum
+   öffentlich beschriebenen Konzept aus `DeveloperMode`s README — eigenständig gegen
+   den SCUM-Serverprozess selbst neu implementiert, kein Code von dort übernommen.
+4. UE4SS' `ProcessConsoleExec`/`ULocalPlayerExec`-Hooks bleiben ein alternativer
+   Ansatzpunkt, falls sich herausstellt, dass Konsolenbefehle über einen anderen Pfad
+   laufen als der direkte `UAdminCommandRegistry`-Lookup.
 
 ## Nicht Teil dieser Phase
 
