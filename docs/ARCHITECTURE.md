@@ -41,9 +41,10 @@ nicht zu gefährden):
 1. **Worker-Thread** (nicht der Game-Thread) hört auf dem konfigurierten TCP-Port, spricht
    das Source-RCON-Wireprotokoll (Auth, Command, Multi-Paket-Antworten), legt eingehende
    Befehle in eine thread-sichere Queue.
-2. **Game-Thread** leert die Queue periodisch, löst den Befehl über das noch zu findende
-   SCUM-interne Autorisierungs-Gate aus, legt die Antwort in eine Per-Request-Queue, die
-   der Worker-Thread über den Socket zurücksendet.
+2. **Game-Thread** leert die Queue periodisch und ruft
+   `UMiscStatics::Test_ProcessAdminCommand(WorldContextObject, commandText)` per
+   `ProcessEvent` auf (siehe "Gefundener Dispatch-Mechanismus" unten) — legt die Antwort
+   in eine Per-Request-Queue, die der Worker-Thread über den Socket zurücksendet.
 
 Diese Trennung vermeidet das nachweislich riskante Muster "eine Engine-interne Funktion
 synchron von einem fremden Thread bzw. außerhalb ihres normalen Aufrufpfads aufrufen" —
@@ -52,7 +53,64 @@ dieses Repos) hat mit genau diesem Muster einmal einen echten Serverabsturz ausg
 als es versuchte, eine abgefangene Server-RPC-Funktion synthetisch außerhalb ihres
 normalen Call-Stacks aufzurufen.
 
-## Offene Reverse-Engineering-Frage
+## Gefundener Dispatch-Mechanismus (Stand 2026-09-04, Abend)
+
+Ein Live-Reflection-Dump (UE4SS' `DumpAllObjects()`, ausgeführt auf einem Testserver mit
+0 Spielern online, nach expliziter Freigabe — siehe `docs/CHANGELOG.md`) hat den
+tatsächlichen Aufrufpunkt gefunden:
+
+```
+UMiscStatics::Test_ProcessAdminCommand(UObject* WorldContextObject, FString commandText)
+```
+
+Eine ganz normale `UFUNCTION(BlueprintCallable, meta=(WorldContext="WorldContextObject"))`
+auf einer Blueprint-Function-Library-Klasse (`MiscStatics`) — **kein** Speicher-Hook,
+**kein** Autorisierungs-Gate-Bypass nötig. Zum Vergleich existiert auch die tatsächliche
+Produktions-RPC `UPlayerRpcChannel::Chat_Server_ProcessAdminCommand(FString commandText)`,
+die im Spiel läuft, wenn ein echter Spieler `#Befehl` in den Chat tippt — die braucht
+aber eine echte `PlayerRpcChannel`-Instanz, also einen verbundenen Client. Die
+`Test_`-Variante auf `MiscStatics` braucht nur irgendein gültiges `UObject*` mit Zugriff
+auf die Spielwelt (z. B. die `ConZGameInstance`, die unser Modul ohnehin schon kennt) und
+den rohen Befehlsstring — exakt das, was ein programmatischer RCON-Ersatz ohne verbundenen
+Admin braucht.
+
+Damit reduziert sich der Kern des neuen Moduls auf:
+
+1. `UFunction*` für `Test_ProcessAdminCommand` einmalig per
+   `UObjectGlobals::StaticFindObject<UClass*>(..., STR("/Script/SCUM.MiscStatics"))` +
+   `->FindFunction(STR("Test_ProcessAdminCommand"))` auflösen (dieselbe Technik, die
+   `native_telemetry`s `call_object_function`-Infrastruktur bereits produktiv nutzt).
+2. Pro eingehendem RCON-Befehl: Parameter-Struct befüllen (`WorldContextObject` +
+   `commandText`-`FString`), `Object->ProcessEvent(function, &params)` aufrufen.
+3. Rückgabewert/Ausgabe der Funktion ermitteln und als RCON-Antwort zurückgeben (ob die
+   Funktion einen Rückgabewert hat oder die Ausgabe stattdessen z. B. über Log/Broadcast
+   läuft, ist noch zu verifizieren — nächster Schritt).
+
+**Warum das die ursprüngliche AOB-Scan-/Hook-Architektur überflüssig macht:** die
+Befürchtung war, dass SCUM den Dispatcher rein nativ (nicht reflektiert) implementiert
+und ein In-Memory-Hook auf ein Autorisierungs-Gate nötig wäre (siehe `DeveloperMode`s
+Ansatz). Die Reflection-Suche hat zwar bestätigt, dass `UAdminCommand_*`,
+`AdminCommandRegistry`, `AdminCommandExecutor` und `AdminCommandsStatics` selbst **keine**
+reflektierten Funktionen haben (reines natives C++) — aber `MiscStatics` bietet einen
+bereits vorhandenen, offiziell reflektierten Eintrittspunkt, der diese ganze interne
+Maschinerie kapselt. Kein Fallback auf AOB-Scanning/Vtable-Patching nötig, solange dieser
+eine Eintrittspunkt zuverlässig funktioniert.
+
+**Noch zu verifizieren** (nächster Schritt, noch nicht getestet):
+
+- Tatsächlicher Aufruf gegen den Testserver (aktuell nur per Reflection-Dump *gefunden*,
+  noch nicht *aufgerufen*).
+- Ob `Test_ProcessAdminCommand` denselben Autorisierungs-/Antwortweg nutzt wie ein echter
+  Admin (inkl. der von SCUM selbst gemeldeten Fehlertexte) oder eine vereinfachte
+  Testvariante ist, die z. B. Berechtigungsprüfungen anders handhabt.
+- Rückgabeformat/-mechanismus der Funktion.
+- Ob `Test_`-Funktionen in einem Shipping-Build zuverlässig über Spiel-Updates hinweg
+  erhalten bleiben (Name klingt nach Entwickler-/Testwerkzeug — könnte in einer
+  zukünftigen SCUM-Version entfernt werden; deshalb bleibt Namensauflösung per
+  `StaticFindObject` statt hartkodierter Adresse wichtig, plus ein Fallback-Plan für
+  den Fall, dass die Funktion irgendwann verschwindet).
+
+## Offene Reverse-Engineering-Frage (historisch, vor obigem Fund)
 
 Wie genau SCUMs interner Admin-Befehls-Dispatcher aufgerufen wird, war zu Beginn dieser
 Phase noch unbekannt. Ein erster, rein lesender String-Scan direkt gegen die

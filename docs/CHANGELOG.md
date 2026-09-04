@@ -110,3 +110,76 @@ Ausdrücklich offen (nächster Schritt):
   `UAdminCommandRegistry`/`UAdminCommandsStatics` bestimmen und einen validen
   `UAdminCommandExecutor` synthetisch erzeugen bzw. finden.
 - Weiterhin offen: RCON-Listener und native Hook-Implementierung selbst.
+
+## 2026-09-04, Abend — Durchbruch: Dispatch-Funktion gefunden, kein Memory-Hook nötig
+
+Anlass: Nutzerfreigabe für einen kurzen Testserver-Neustart, um den geplanten
+Live-Reflection-Dump zu ziehen (0 Spieler online zum Zeitpunkt des Neustarts,
+vorher per `/players.json` geprüft).
+
+Vorgehen:
+
+1. `PowelsScumSdkDump` (bereits vorhandener, bisher ungenutzter UE4SS-Lua-Mod im
+   privaten Schwesterprojekt, nutzt UE4SS' eingebautes `DumpAllObjects()`) in
+   `mods.txt` des Testservers aktiviert (`mods.txt` vorher als Zeitstempel-Backup
+   gesichert).
+2. Testserver über die etablierten Scheduled Tasks "IOTD SCUM Manual Stop"/
+   "...Manual Start" neu gestartet (derselbe Mechanismus, den auch die
+   Standard-Restart-Tools des privaten Projekts nutzen).
+3. Dump lief automatisch 90 Sekunden nach Mod-Start, fertig nach 8 Sekunden
+   (`UE4SS_ObjectDump.txt`, 280,54 MB).
+4. Dump **nicht** komplett heruntergeladen — stattdessen serverseitig mit
+   `Select-String` gezielt nach den relevanten Klassen/Funktionen gefiltert, um
+   nur kleine, thematisch passende Ausschnitte zurückzubekommen.
+
+Fund:
+
+- `UAdminCommand_*`-Klassen (alle 247), `AdminCommandRegistry`,
+  `AdminCommandExecutor` und `AdminCommandsStatics` haben **keine** einzige
+  reflektierte (`UFUNCTION`) Methode — reines natives C++, wie befürchtet nicht
+  per `ProcessEvent` aufrufbar.
+- `AdminCommandRegistry` ist aber eine echte, aktuell laufende Singleton-Instanz
+  — erreichbar über die `ObjectProperty _adminCommandRegistry` auf SCUMs
+  Kernklasse `ConZGameInstance`, mit einem `_commands`-Array (`ArrayProperty`
+  aus `ClassProperty`-Einträgen) als eigentlicher Befehlstabelle.
+- **Durchbruch**: `UMiscStatics::Test_ProcessAdminCommand(UObject*
+  WorldContextObject, FString commandText)` — eine ganz normale, öffentlich
+  reflektierte `BlueprintCallable`-Funktion auf einer Statics-Klasse. Genau
+  zwei Parameter, kein Spieler-Kontext nötig. Zum Vergleich auch gefunden:
+  `UPlayerRpcChannel::Chat_Server_ProcessAdminCommand(FString commandText)` —
+  die echte Produktions-RPC, die beim Tippen von `#Befehl` im Spielchat läuft,
+  aber eine echte verbundene `PlayerRpcChannel`-Instanz braucht (der schwerere
+  Weg, den ein programmatischer Ersatz gerade vermeiden will).
+
+Bedeutung für die Architektur: **kein In-Memory-Hook, kein AOB-Scan, kein
+Autorisierungs-Gate-Bypass mehr nötig** (siehe überarbeiteter Abschnitt
+"Gefundener Dispatch-Mechanismus" in `docs/ARCHITECTURE.md`). Das neue Modul
+muss nur noch `Test_ProcessAdminCommand` per `StaticFindObject`+`ProcessEvent`
+aufrufen — exakt dieselbe, bereits bewährte Technik, die
+`native_telemetry`s `call_object_function`-Infrastruktur im privaten
+Schwesterprojekt heute schon nutzt.
+
+Aufräumen: `mods.txt`-Änderung **bewusst nicht rückgängig gemacht** (kein
+zweiter Neustart) — `PowelsScumSdkDump` ist idempotent (überspringt beim
+nächsten Start dank Marker-Datei), entspricht damit demselben Verhalten wie
+beim ursprünglichen (privaten) Deploy-Tooling für diesen Mod. Backup der
+vorherigen `mods.txt` liegt auf dem Testserver unter
+`mods.txt.before-openscumrcon-sdk-dump-20260904-184510`.
+
+Nebenbefund (privates Tooling, nicht Teil dieses Repos): das bestehende
+Skript zum Ausführen von PowerShell auf der Test-VM
+(`tools/run_test_vm_remote_ps.py`) hat einen Paramiko-Deadlock bei größerer
+Kommandoausgabe (`recv_exit_status()` vor `stdout.read()` aufgerufen) — für
+diese Recherche wurde eine lokal korrigierte Variante mit richtiger
+Lesereihenfolge genutzt, der Fix selbst wurde nicht ins private Repo
+übernommen (nicht Teil dieses Auftrags).
+
+Ausdrücklich offen (nächster Schritt):
+
+- `Test_ProcessAdminCommand` tatsächlich aufrufen (bisher nur per
+  Reflection-Dump *gefunden*, noch nicht *aufgerufen*) und Rückgabeverhalten
+  verifizieren.
+- Prüfen, ob die `Test_`-Variante denselben Autorisierungsweg wie ein echter
+  Admin nimmt.
+- Danach: RCON-Listener (Worker-Thread, Source-RCON-Wireprotokoll) und die
+  Verdrahtung der beiden Teile zueinander implementieren.
