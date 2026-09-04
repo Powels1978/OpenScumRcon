@@ -21,6 +21,34 @@ verbietet Reverse Engineering und Codeübernahme; dieses Projekt reimplementiert
 öffentlich beschriebene *Konzept* eigenständig, ohne Code oder Binary von SCUM-RCON oder
 DeveloperMode zu untersuchen oder zu übernehmen.
 
+## Klarstellung: "Memory Injection" vs. legitimes UE4SS-Modul
+
+Herbie soll (Nutzer-Erinnerung, Quelle nicht mehr auffindbar) einmal geschrieben haben,
+SCUM untersage "Memory Injection", weshalb er es "anders gemacht" habe. Das steht auf den
+ersten Blick im Widerspruch zu seinem eigenen Log (`[SCUM-RCON] PatternScan: ...`,
+`EngineHooks: hook 'sig_a' installed`) — tatsächlich dürfte hier eine wichtige, aber
+enge Definition gemeint sein:
+
+- **"Memory Injection"** im Anti-Cheat-relevanten, meist verbotenen Sinn: Code von
+  **außen** in einen bereits laufenden, fremden Prozess einschleusen (klassisches
+  `CreateRemoteThread`/`WriteProcessMemory`-Cheat-Tool-Muster) — das erkennen und
+  ahnden Anti-Cheat-Systeme gezielt.
+- **Was UE4SS-Mods (Herbies wie auch unsere eigenen) tatsächlich tun**: eine DLL wird
+  ganz regulär beim **Start** von `SCUMServer.exe` über die normale Windows-
+  DLL-Ladereihenfolge geladen (`dwmapi.dll`-Shim) — keine externe Einschleusung in
+  einen bereits laufenden Prozess, sondern ein von Anfang an legitim geladenes Modul.
+  Pattern-Scans/Hooks passieren danach **innerhalb des eigenen, bereits geladenen
+  Moduls** auf den eigenen Prozessspeicher — technisch/rechtlich etwas anderes als
+  "Injektion" in einen fremden Prozess.
+
+**Für dieses Projekt**: Wir folgen ohnehin demselben, bereits etablierten Muster (eigenes
+UE4SS-Modul, ganz normal per `mods.txt` geladen, kein externes Einschleusen in einen
+fremden oder bereits laufenden Prozess) — dieselbe Konvention, die auch
+`native_telemetry` und `scum_rcon` selbst nutzen. Die Klarstellung ändert nichts an der
+geplanten Architektur, bestätigt aber, dass der eingeschlagene Weg (eigenes, normal
+geladenes Modul statt externer Prozessmanipulation) der richtige und auch von Herbie
+selbst (implizit) für zulässig gehaltene ist.
+
 ## Protokollwahl: Source RCON beibehalten
 
 Das neue Modul implementiert **denselben Source-RCON-Wireprotokoll-Standard**
