@@ -355,3 +355,57 @@ Ausdrücklich offen (nächster Schritt):
   Memory-Hooking zurückgegriffen wird.
 - Falls das nicht reicht: Array-of-Bytes-Scan auf die beiden Autorisierungs-Gates
   (eigenständig implementiert, kein Code von Herbie/DeveloperMode übernommen).
+
+## 2026-09-04, Nacht (Teil 3) — Versuch, Herbies Aufrufweg per Engine-Hook mitzuschneiden (ergebnislos, aber lehrreich)
+
+Anlass: Nutzer-Idee — statt nur zu vermuten, WIE Herbies Dispatch funktioniert, den
+eigenen Serverprozess während eines echten, per Herbie ausgelösten `SetGodMode`-Aufrufs
+beobachten. Rein passives Mitschneiden von Engine-Events im eigenen Prozess (UE4SS'
+öffentliche Hook-API), kein Anfassen von Herbies Binary.
+
+Vorgehen: neuer, separater Diagnose-Mod `OpenScumRconCapture` registriert
+`RegisterCallFunctionByNameWithArgumentsPreHook` (UE4SS-Lua-API, hookt
+`UObject::CallFunctionByNameWithArguments` — der naheliegendste Verdacht für den
+Dispatch-Mechanismus hinter `#Befehl`-artigen Aufrufen) und protokolliert jeden Aufruf,
+dessen Befehlsstring `"godmode"` enthält (Context-Objekt, String, Executor-Objekt).
+Testserver neu gestartet, Hook erfolgreich registriert (`hook_registered_ok`), danach
+`SetGodMode true` per Herbies RCON ausgelöst, während der Nutzer nachweislich mit
+echtem Charakter online war (`isGodMode` vorher `false`, danach `true` — Wirkung wie
+gewohnt bestätigt).
+
+**Ergebnis: keine einzige Zeile aufgezeichnet.** Zwei mögliche Erklärungen, nicht
+unterschieden:
+
+1. Der Hook feuerte nie, weil Herbies Dispatch für `AdminCommand`-Befehle tatsächlich
+   nicht über `CallFunctionByNameWithArguments` läuft (passt zu Herbies eigenem Log:
+   seine `sig_a`/`sig_b`-Hooks sind native In-Memory-Patches auf eigene interne
+   Funktionen, nicht auf einen der UE4SS-Standard-Hookpunkte).
+2. Der Hook feuerte, aber der Textvergleich griff nie, weil `Str` in UE4SS-Lua
+   vermutlich kein einfacher Lua-String ist, sondern ein `FString`-Objekt — `tostring()`
+   darauf liefert wahrscheinlich keinen brauchbaren Text, wodurch das
+   `string.find(..., "godmode")`-Filter nie hätte matchen können, egal wie oft die
+   Funktion aufgerufen wurde.
+
+Nicht weiter verfolgt (bewusste Priorisierung): eine sichere Unterscheidung der beiden
+Fälle bräuchte entweder ungefiltertes Loggen aller Aufrufe (riskant wegen Log-Flut/
+Performance auf einem Live-Server) oder die korrekte `FString`-Konvertierung in Lua zu
+klären. Beides bringt uns nicht näher an eine funktionierende Lösung heran — die
+eigentliche Erkenntnis bleibt bestehen: der Dispatch-Mechanismus ist mit den
+Lua-verfügbaren UE4SS-Hookpunkten nicht ohne Weiteres beobachtbar, was zusätzlich dafür
+spricht, dass echtes natives Hooking (C++, nicht Lua) für den nächsten Schritt nötig ist.
+
+Aufräumen: `OpenScumRconCapture` wieder aus `mods.txt` entfernt (kein weiterer Neustart
+dafür ausgelöst). Serverzustand nach allen Tests dieser Session final geprüft: stabil,
+normale Speicherwerte (Prozess lief zwischenzeitlich nach einem Neustart länger als
+gewohnt hoch — Herbies eigene "server still starting (initialising)"-Meldung bestätigte,
+dass das ein normaler, wenn auch langsamerer Boot-Vorgang war, kein Hänger).
+
+Stand am Ende dieser (sehr langen) Recherche-Session: Der Dispatch-Mechanismus ist als
+Konzept identifiziert (`AdminCommandRegistry`/`Executor`, 233-247 Befehlsklassen,
+Autorisierungs-Gates), ein einfacher Reflection-Shortcut wurde geprüft und als nicht
+ausreichend verworfen, ein Versuch, Herbies echten Weg passiv zu beobachten, blieb
+ergebnislos. Der nächste sinnvolle Schritt ist vermutlich ein Wechsel von
+Lua-Experimenten zu echtem nativen C++ (Debugger/Disassembler gegen den eigenen
+Serverprozess, oder gezielte AOB-Scans wie ursprünglich geplant) — das sprengt den
+Rahmen weiterer Lua-Restarts und sollte in einer eigenen, dafür vorbereiteten Sitzung
+angegangen werden.
