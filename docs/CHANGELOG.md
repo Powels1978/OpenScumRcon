@@ -183,3 +183,55 @@ Ausdrücklich offen (nächster Schritt):
   Admin nimmt.
 - Danach: RCON-Listener (Worker-Thread, Source-RCON-Wireprotokoll) und die
   Verdrahtung der beiden Teile zueinander implementieren.
+
+## 2026-09-04, Abend (Teil 2) — Herbies eigenes Log als zusätzliche, legitime Bestätigungsquelle
+
+Anlass: Herbies `scum_rcon`-Mod läuft auf demselben Testserver noch aktiv (Lizenzserver
+laut letztem Stand noch nicht final abgeschaltet). Idee: statt seinen Code zu untersuchen
+(lizenzrechtlich nicht erlaubt), einfach sein **eigenes, freiwillig geschriebenes
+UE4SS-Log** lesen (das jeder Betreiber seines Mods ohnehin sieht) und sein RCON ganz
+normal als Endnutzer benutzen — beides vollständig legitime, nicht-invasive Beobachtung,
+kein Reverse Engineering seines Binaries.
+
+Fund aus dem UE4SS-Log (Mod-Start, `[SCUM-RCON] init - v0.4.6`):
+
+- Fünf Pattern-Scan-Signaturen (`sig_a`/`sig_b`/`sig_c`/`sig_lv`/`sig_x`), je mit eigenem
+  Zweck: `sig_a`+`sig_b` = "EngineHooks" (2 Hooks — passt zu den zwei
+  Autorisierungs-Gates, die auch `DeveloperMode` beschreibt); `sig_c` = "chat-line detour"
+  (fängt Text-Ausgaben von Befehlen ab); `sig_lv` = "vehlist RPC-send detour" (Grund für
+  die Multi-Paket-Sonderbehandlung von `ListSpawnedVehicles`, die unsere eigene
+  `SourceRcon`-Klasse ebenfalls kennt); `sig_x` = "command executor ready".
+- **Baut selbst eine "Verb-Map"** durch Scannen aller geladenen `UClass`-Objekte nach
+  `AdminCommand`-Subklassen — exakt dieselbe Technik wie unser eigener Fund. Erster
+  Versuch (kurz nach Start, Welt noch nicht voll geladen): 0 von 2908 Objekten. Automatischer
+  Retry beim nächsten Befehl erfolgreich: **"verb map built - 233 command(s) discovered
+  (scanned 8059 class objects, 233 AdminCommand subclasses)"** — sehr nah an unseren
+  eigenen 247 (Differenz sind Hilfs-/Completion-Klassen wie
+  `AdminCommandArgumentCompletion_*`, keine echten Befehle).
+- **Game-Thread-Drain über einen `EngineTick`-Pre-Hook** ("added prehook ... RCON command
+  game-thread drain") — bestätigt unsere eigene geplante Architektur (Worker-Thread nimmt
+  Netzwerk entgegen, Game-Thread verarbeitet den Befehl) als richtigen, bereits bewährten
+  Ansatz.
+- Live-Test bestätigt zwei unterschiedliche Ausführungspfade: einfache/häufige Befehle wie
+  `ListPlayers` laufen ohne sichtbare "dispatch"-Zeile (vermutlich fest verdrahteter
+  Sonderfall), während generische Befehle über den Verb-Map-Pfad laufen und dabei eine
+  eigene Log-Zeile erzeugen: `dispatch: 'listspawnedarmednpcs' executed (1 line(s)
+  captured)` — der Teil "line(s) captured" bestätigt, dass die Ausgabe über den
+  Chat-Detour-Hook (`sig_c`) **als Text abgefangen** wird, nicht über einen sauberen
+  Rückgabewert der aufgerufenen Funktion.
+- Läuft auf `10.77.0.2:28015` (interne WireGuard-Tunnel-Adresse der Test-VM).
+
+Einordnung für die eigene Architektur: Herbies Mod nutzt offenbar den **härteren, nativen**
+Weg über die tatsächliche `AdminCommandRegistry`/`AdminCommandExecutor`-Maschinerie (nicht
+den von uns gefundenen `MiscStatics::Test_ProcessAdminCommand`-Shortcut) — vermutlich um
+exakt denselben Ausführungs-/Berechtigungsweg wie ein echter Admin zu bekommen. Das ist ein
+nützlicher Rückfallplan, falls sich `Test_ProcessAdminCommand` als unzuverlässig oder in
+Zukunft entfernt herausstellt: die generische Verb-Map-Technik ist unabhängig bestätigt
+funktionsfähig. Außerdem wichtiger Hinweis für die eigene Ausgabe-Behandlung: falls
+`Test_ProcessAdminCommand` seine Ausgabe ebenfalls nur druckt statt zurückzugeben, braucht
+auch unser Modul einen Weg, diese Text-Ausgabe abzufangen (z. B. einen Log-/Chat-Hook,
+analog zu Herbies `sig_c`) statt sich auf einen Rückgabewert zu verlassen.
+
+Nicht getan (bewusst außerhalb des Erlaubten): keine Untersuchung/Disassemblierung von
+`scum_rcon\dlls\main.dll` selbst — alle Erkenntnisse stammen ausschließlich aus dem von
+der laufenden, lizenzkonform genutzten Software selbst erzeugten Logtext.
