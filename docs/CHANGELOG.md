@@ -291,3 +291,67 @@ analog zu Herbies `sig_c`) statt sich auf einen Rückgabewert zu verlassen.
 Nicht getan (bewusst außerhalb des Erlaubten): keine Untersuchung/Disassemblierung von
 `scum_rcon\dlls\main.dll` selbst — alle Erkenntnisse stammen ausschließlich aus dem von
 der laufenden, lizenzkonform genutzten Software selbst erzeugten Logtext.
+
+## 2026-09-04, Nacht (Teil 2) — Korrektur: Test_ProcessAdminCommand wirkt NICHT zuverlässig, sauberer A/B-Test durchgeführt
+
+Anlass: Nutzer wollte GodMode explizit über "unser neues RCON-Tool" aktivieren. Dabei
+fiel auf: ein eigenständiges, wiederverwendbares Tool existierte noch gar nicht — nur
+der einmalige Lua-Testaufruf von zuvor. Statt das wieder als Einmal-Skript zu bauen,
+wurde ein kleiner, wiederverwendbarer Lua-Diagnose-Mod gebaut (derselbe Mod-Ordner
+`OpenScumRconProbe`, neu geschrieben): pollt alle 1s eine Befehlsdatei
+(`C:\PowelsLocalBridge\openscumrcon_pending_command.txt`) und führt jeden hineingeschriebenen
+Befehlsstring per `Test_ProcessAdminCommand` aus — kein Neustart mehr pro Testbefehl nötig.
+
+Stolperstein dabei: die erste Version nutzte `LoopInGameThreadWithDelay` (laut UE4SS-Doku
+der empfohlene Nachfolger von `ExecuteWithDelay`/`LoopAsync`) — dieser Aufruf lief aber
+ins Leere, ohne Fehlermeldung im Log (vermutlich in dieser UE4SS-Version nicht verfügbar
+oder anders benannt). Auf das bereits zweimal bewährte, rekursiv sich selbst
+neu-planende `ExecuteWithDelay`-Muster zurückgewechselt — danach lief das Polling
+zuverlässig.
+
+**Der eigentliche Befund:** Bei einem sauberen A/B-Vergleich — derselbe Befehl
+(`SetGodMode true <steamId>`) einmal über unseren `Test_ProcessAdminCommand`-Aufruf,
+einmal direkt danach über Herbies weiterhin funktionierendes RCON, jeweils während
+der Nutzer nachweislich mit echtem Charakter online war — zeigte sich:
+
+- Unser Aufruf: lief fehlerfrei durch (Objekte gefunden, Funktion aufgerufen,
+  Rückgabewert `nil`), **aber keine messbare Wirkung** (per `native_telemetry`
+  bestätigt: `isGodMode` blieb `false`).
+- Herbies identischer Befehl direkt danach: **wirkte sofort** (`isGodMode: true`,
+  vom Nutzer auch im Spiel selbst bestätigt).
+
+Der zuvor als "verifiziert" gemeldete erste Erfolg (Eintrag "2026-09-04, Nacht") wird
+hiermit **korrigiert** — vermutlich Fehlinterpretation einer zufälligen zeitlichen
+Abfolge (GodMode war zu dem Zeitpunkt bereits durch einen Herbie-Aufruf gesetzt; ein
+zwischenzeitlicher Spieler-Reconnect setzt GodMode ohnehin automatisch zurück, wie der
+Nutzer selbst bestätigte — "Rejoin ist GodMode immer weg").
+
+Naheliegendste Erklärung: `Test_ProcessAdminCommand` prüft vermutlich dieselbe
+Autorisierung wie ein echter Admin-Aufruf. Unser `WorldContextObject`
+(die `ConZGameInstance` — kein echter Spieler-/Admin-Kontext) erfüllt diese Prüfung
+nicht, der Aufruf wird intern still verworfen. Passt zur bereits gefundenen
+Autorisierungs-String-Kette ("Player must be developer" / "Not authorized to execute
+command") und dazu, dass Herbie selbst den aufwendigeren Weg über echte
+Autorisierungs-Gate-Hooks geht statt eines einfachen Funktionsaufrufs.
+
+Nebenbefund (kein Bug, unabhängig bestätigt vom Nutzer): ein zwischenzeitlicher
+Verdacht auf einen weiteren Serverabsturz stellte sich als (a) ein Client-seitiger
+Unreal-Crash auf dem Notebook des Nutzers heraus (unabhängig vom Server) und (b) als
+verzögert bemerkter, von uns selbst ausgelöster Neustart — der Testserver-Prozess lief
+beide Male nachweislich durchgehend weiter (per Prozess-Startzeit-Vergleich bestätigt).
+
+Aufräumen: `OpenScumRconProbe` erneut aus `mods.txt` entfernt (kein weiterer Neustart
+dafür ausgelöst).
+
+Bedeutung für die Architektur: siehe überarbeiteter Abschnitt "Gefundener
+Dispatch-Mechanismus" in `docs/ARCHITECTURE.md` — der einfache `Test_ProcessAdminCommand`-
+Shortcut reicht vermutlich allein nicht aus. Der härtere, native Weg über echte
+Autorisierungs-Gate-Hooks (wie bei Herbie beobachtet) ist wohl doch notwendig.
+
+Ausdrücklich offen (nächster Schritt):
+
+- Testen, ob ein *echtes* Spieler-/PlayerController-Objekt als `WorldContextObject`
+  (statt der `GameInstance`) die Autorisierungsprüfung erfüllt — bevor auf
+  Memory-Hooking zurückgegriffen wird.
+- Falls das nicht reicht: Array-of-Bytes-Scan auf die beiden Autorisierungs-Gates
+  (eigenständig implementiert, kein Code von Herbie/DeveloperMode übernommen).

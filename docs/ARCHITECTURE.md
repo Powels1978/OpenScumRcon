@@ -96,15 +96,41 @@ bereits vorhandenen, offiziell reflektierten Eintrittspunkt, der diese ganze int
 Maschinerie kapselt. Kein Fallback auf AOB-Scanning/Vtable-Patching nötig, solange dieser
 eine Eintrittspunkt zuverlässig funktioniert.
 
-**Verifiziert (2026-09-04, Nacht):** `Test_ProcessAdminCommand` wurde per UE4SS-Lua
-gegen einen echten Testserver mit online verbundenem Spieler aufgerufen
-(`MiscStatics:Test_ProcessAdminCommand(GameInstance, "SetGodMode false <steamId>")`) —
-**GodMode wurde dadurch tatsächlich deaktiviert**, unabhängig bestätigt über
-`native_telemetry` (komplett separates System, weder Herbies Mod noch der Test-Probe
-selbst). Der Mechanismus funktioniert nachweislich, nicht nur theoretisch. Details zum
-Testaufbau: `docs/CHANGELOG.md`.
+**Teilweise verifiziert, dann korrigiert (2026-09-04, Nacht):** Ein erster Test
+(`MiscStatics:Test_ProcessAdminCommand(GameInstance, "SetGodMode false <steamId>")`)
+zeigte tatsächlich eine Wirkung (GodMode ging von `true` auf `false`) — allerdings
+stellte sich bei einem sauberen A/B-Test (derselbe Befehlsstring einmal über unseren
+Aufrufweg, einmal über Herbies noch funktionierendes RCON, jeweils während derselbe
+Spieler nachweislich online war) heraus: **Herbies Aufruf wirkt zuverlässig, unser
+eigener Aufruf über `Test_ProcessAdminCommand` nicht** — läuft fehlerfrei durch
+(kein Lua-Fehler, `WorldContextObject`/Funktion beide gefunden), verändert aber den
+per `native_telemetry` gemessenen Spielzustand nicht. Der erste scheinbare Erfolg war
+vermutlich Zufall/Fehlinterpretation (z. B. GodMode war zu dem Zeitpunkt bereits durch
+einen vorherigen Herbie-Aufruf gesetzt und der spätere Reconnect des Spielers hat es
+ohnehin zurückgesetzt — siehe `docs/CHANGELOG.md` für den vollen Testverlauf).
+
+**Wahrscheinlichste Erklärung:** `Test_ProcessAdminCommand` prüft vermutlich dieselbe
+Autorisierung wie ein echter Admin-Aufruf (siehe die gefundene String-Kette "Player must
+be developer" / "Not authorized to execute command"), und unser synthetisches
+`WorldContextObject` (die `ConZGameInstance`, kein echter Spieler-/Admin-Kontext) erfüllt
+diese Prüfung nicht — der Aufruf wird intern still verworfen, ohne dass das über den
+Lua-Rückgabewert sichtbar wird (die Antworttext-Ausgabe läuft laut Herbies eigenem Log
+ohnehin nur über einen Chat-/Konsolen-Kanal, nicht über einen Rückgabewert oder das
+Standard-Logfile — dort war entsprechend auch nichts zu finden).
+
+**Bedeutung**: Der ursprünglich gefundene "einfache Shortcut" reicht damit *allein*
+vermutlich nicht aus. Herbies eigener, aufwendigerer Ansatz (zwei native
+Autorisierungs-Gate-Hooks plus eigener `AdminCommandRegistry`/`Executor`-Dispatch, siehe
+oben) ist wohl kein optionaler Fallback, sondern der eigentlich notwendige Weg. Die im
+Abschnitt "Modul-Struktur" oben skizzierte Architektur (Worker-Thread + Game-Thread-Drain)
+bleibt gültig — nur der Baustein "wie genau der Befehl ausgeführt wird" muss wahrscheinlich
+doch über die härtere Route laufen, nicht über `Test_ProcessAdminCommand` allein.
 
 **Noch offen:**
+
+- Ob sich die Autorisierungsprüfung mit einem *echten* Spieler-/PlayerController-Objekt
+  als `WorldContextObject` (statt der `GameInstance`) umgehen lässt, oder ob tatsächlich
+  ein Autorisierungs-Gate-Hook (analog zu Herbies `sig_a`/`sig_b`) nötig ist.
 
 - Ob `Test_ProcessAdminCommand` denselben Autorisierungs-/Antwortweg nutzt wie ein echter
   Admin (inkl. der von SCUM selbst gemeldeten Fehlertexte) oder eine vereinfachte
