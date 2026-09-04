@@ -17,11 +17,15 @@ client. This project rebuilds the same functionality independently.
 
 ## Status
 
-**Early development, not yet functional.** Right now only the project skeleton
-exists (build setup, architecture decision) — the actual reverse-engineering step
-(finding and hooking SCUM's internal authorization gate for admin commands) is
-still ahead. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the planned
-technical approach and [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for progress.
+**Early development, builds and runs, not yet reliable.** A real Source RCON
+listener, worker-thread/game-thread command queue, and a call into SCUM's
+`Test_ProcessAdminCommand` are implemented and compile cleanly against UE4SS.
+What's still open: the underlying SCUM call was verified (live A/B test) to
+run without error but not to reliably apply the same effect a real admin
+command does — see [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for the full,
+warts-and-all test history. Not yet deployed to or tested against a live
+server with this new code. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
+for the technical approach.
 
 ## How it's meant to work
 
@@ -43,8 +47,9 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Game__Shipping__Win64
 ```
 
-The built `native_module` is currently just a registration stub (loads as a
-UE4SS mod, does not yet implement an RCON server) — see Status above.
+Copy `native_module/config.example.ini` to `config.ini` next to the built mod's
+`dlls/main.dll` on the server (same convention Herbie's own mod uses) and set a
+port/password before deploying. See Status above for what does and doesn't work yet.
 
 ## License
 
@@ -71,12 +76,14 @@ auszulösen. Dieses Projekt baut dieselbe Funktionalität unabhängig nach.
 
 ### Status
 
-**Frühe Entwicklung, noch nicht funktionsfähig.** Aktuell existiert nur das
-Projekt-Skelett (Build-Setup, Architekturentscheidung) — der eigentliche
-Reverse-Engineering-Schritt (SCUMs internes Autorisierungs-Gate für Admin-Befehle finden
-und hooken) steht noch aus. Siehe [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) für die
-geplante technische Umsetzung und [`docs/CHANGELOG.md`](docs/CHANGELOG.md) für den
-Fortschritt.
+**Frühe Entwicklung, baut und läuft, aber noch nicht zuverlässig.** Ein echter
+Source-RCON-Listener, die Worker-Thread/Game-Thread-Befehls-Queue und ein Aufruf
+von SCUMs `Test_ProcessAdminCommand` sind implementiert und bauen sauber gegen
+UE4SS. Was noch offen ist: der zugrundeliegende SCUM-Aufruf wurde per Live-A/B-Test
+zwar als fehlerfrei laufend, aber **nicht zuverlässig wirksam** bestätigt — die
+volle, ungeschönte Testhistorie steht in [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
+Noch nicht mit diesem neuen Code gegen einen echten Server getestet/deployt. Siehe
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) für die technische Umsetzung.
 
 ### Wie es funktionieren soll
 
@@ -99,8 +106,9 @@ cmake -S . -B build -G "Visual Studio 17 2022" -A x64
 cmake --build build --config Game__Shipping__Win64
 ```
 
-Das gebaute `native_module` ist aktuell nur ein Registrierungs-Stub (lädt als UE4SS-Mod,
-implementiert noch keinen RCON-Server) — siehe Status oben.
+`native_module/config.example.ini` nach `config.ini` neben die gebaute `dlls/main.dll`
+auf dem Server kopieren (dieselbe Konvention wie bei Herbies eigenem Mod) und vor
+dem Deploy Port/Passwort setzen. Siehe Status oben, was schon geht und was noch nicht.
 
 ### Lizenz
 

@@ -409,3 +409,67 @@ Lua-Experimenten zu echtem nativen C++ (Debugger/Disassembler gegen den eigenen
 Serverprozess, oder gezielte AOB-Scans wie ursprünglich geplant) — das sprengt den
 Rahmen weiterer Lua-Restarts und sollte in einer eigenen, dafür vorbereiteten Sitzung
 angegangen werden.
+
+## 2026-09-05 (nachts, unbeaufsichtigt) — Erste echte native C++-Implementierung, baut sauber
+
+Anlass: Nutzer bat darum, während er schläft schon mal zu programmieren, Review am
+nächsten Tag. Bewusste Einschränkung für diese Session: **kein Deploy, kein
+Neustart des Testservers** — nur Code schreiben und lokal kompilieren, da ein
+Restart-Test ohne den Nutzer als Ansprechpartner nicht verantwortbar ist, falls
+etwas schiefgeht.
+
+Umgesetzt (`native_module/src/`, alles neu außer `dllmain.cpp`, das umgeschrieben
+wurde):
+
+- **`rcon_protocol.hpp/.cpp`** — Server-seitige Implementierung des Source-RCON-
+  Wireprotokolls (Paket-Framing, Multi-Paket-Split bei langen Antworten), exaktes
+  Gegenstück zur bereits bewährten Client-Implementierung in
+  `local_bridge/powels_local_bridge.py` (`SourceRcon`-Klasse) — dieselbe
+  Paketstruktur, dieselbe 4096-Byte-Chunking-Konvention.
+- **`command_queue.hpp`** — Thread-sichere Übergabe Worker-Thread → Game-Thread
+  per `std::promise`/`std::future` (Worker-Thread blockiert auf die Antwort, statt
+  zu pollen) — die "echte" Umsetzung der Architektur, die die Lua-Diagnose-Mods der
+  letzten Session nur simuliert haben (dateibasiertes Polling alle 1s).
+- **`rcon_server.hpp/.cpp`** — Winsock2-TCP-Server auf einem eigenen Worker-Thread
+  (v1 bewusst eine Verbindung gleichzeitig, siehe Kommentar im Header für die
+  Begründung und den geplanten Ausbau). Kein UE4SS-/Unreal-Include in dieser Datei
+  — sauber getrennt vom Rest, nur über `CommandQueue` verbunden.
+- **`admin_dispatch.hpp/.cpp`** — löst `UMiscStatics::Test_ProcessAdminCommand`
+  und die nötigen `UClass`-Zeiger per `StaticFindObject` auf (exakt dieselbe
+  Technik, die `native_telemetry`s `on_unreal_init()` bereits produktiv nutzt),
+  ruft die Funktion per `ProcessEvent` auf.
+- **`dllmain.cpp`** — verdrahtet alles: `config.ini`-Reader (dieselbe Konvention
+  wie Herbies eigener Mod), `EngineTick`-Pre-Hook (bestätigt derselbe Mechanismus,
+  den auch Herbies Log als "game-thread drain" zeigt) leert die Queue und ruft
+  `AdminDispatch::dispatch_command()` auf dem Game-Thread auf.
+
+**Wichtige, bewusste Korrektur gegenüber der letzten Session**: `admin_dispatch.cpp`
+nutzt NICHT mehr die `GameInstance` als `WorldContextObject` (das war der Aufruf, der
+im A/B-Test nachweislich nichts bewirkt hat) — stattdessen sucht
+`find_admin_context_object()` per `ForEachUObject` zuerst nach einer echten, aktuell
+verbundenen `ConZPlayerController`-Instanz und nutzt die. Das ist die erste konkrete
+Umsetzung des offenen Punkts aus `docs/ARCHITECTURE.md` ("Ob sich die
+Autorisierungsprüfung mit einem echten Spieler-Objekt umgehen lässt") — **noch nicht
+live getestet**, da das einen Serverneustart gebraucht hätte.
+
+Build-Verifikation (lokal, kein Server involviert): `cmake --build` gegen den
+vorhandenen UE4SS-Entwicklungsbaum durchlaufen lassen. Ein Zwischenfehler
+(`C1060: Kein verfügbarer Speicher mehr im Heap`) beim ersten Versuch war ein reiner
+MSBuild-Parallelitäts-Effekt (UE4SS' eigene ~vollständige Neukompilierung mit hoher
+Parallelität), kein Bug — mit `/m:1` (seriell) behoben, UE4SS selbst kompilierte
+danach vollständig durch. Zwei echte, kleine Fehler im eigenen Code gefunden und
+behoben: fehlende `RC::`-Namespace-Qualifizierung bei `LoopAction` und `StringType`
+(beide leben in `RC`, nicht `RC::Unreal`, `using namespace RC::Unreal` allein reicht
+nicht). Danach: **sauberer Build, `OpenScumRconNative.dll` erfolgreich erzeugt**
+(162 KB). Build-Ordner wieder gelöscht (nicht Teil des Commits, wie gehabt).
+
+Ausdrücklich offen (nächster Schritt, braucht den Nutzer):
+
+- Deploy auf den Testserver und echter Verbindungstest über einen Source-RCON-Client
+  (Port `28016`, siehe `config.example.ini` — bewusst nicht Herbies `28015`, damit
+  beide parallel laufen können).
+- Verifizieren, ob der PlayerController-basierte Aufruf tatsächlich wirkt (die
+  eigentliche offene Frage aus der letzten Session).
+- Antwortformat/-mechanismus weiterhin ungelöst — `dispatch_command()` gibt aktuell
+  nur einen technischen Status zurück ("ok: dispatched via ..."), nicht SCUMs
+  echten Antworttext.
