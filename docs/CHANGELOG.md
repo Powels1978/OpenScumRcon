@@ -184,6 +184,62 @@ Ausdrücklich offen (nächster Schritt):
 - Danach: RCON-Listener (Worker-Thread, Source-RCON-Wireprotokoll) und die
   Verdrahtung der beiden Teile zueinander implementieren.
 
+## 2026-09-04, Nacht — Erster echter Aufruf verifiziert: GodMode per Test_ProcessAdminCommand deaktiviert
+
+Anlass: Nutzer war mit echtem Charakter auf dem Testserver online (GodMode zuvor per
+Herbies RCON auf `true` gesetzt, siehe unten) — passender Moment, um den in der
+Architekturplanung gefundenen Aufrufweg erstmals tatsächlich auszuprobieren, nicht nur
+zu dokumentieren.
+
+Vorgehen:
+
+1. Referenzwert über Herbies noch laufendes RCON gesetzt: `SetGodMode true <steamId>`
+   → Antwort "God mode set to true.", per `native_telemetry` bestätigt (`isGodMode: true`).
+2. Minimaler, einmaliger UE4SS-**Lua**-Diagnose-Mod geschrieben (kein C++/Build nötig,
+   schneller Iterationszyklus) — eigener, temporärer Mod-Ordner `OpenScumRconProbe`,
+   nach demselben Muster wie `PowelsScumSdkDump`: `ExecuteWithDelay(20000, ...)`, dann
+   `StaticFindObject("/Script/SCUM.Default__MiscStatics")` +
+   `FindFirstOf("ConZGameInstance")` (als `WorldContextObject`) auflösen und
+   `MiscStatics:Test_ProcessAdminCommand(GameInstance, "SetGodMode false <steamId>")`
+   aufrufen — via UE4SS' Lua-`__index`-Metamethode, die reflektierte `UFunction`s als
+   normale Methodenaufrufe auf einem `UObject` verfügbar macht (kein `CallFunction`
+   nötig).
+3. `mods.txt` um `OpenScumRconProbe : 1` ergänzt (Backup vorher), Testserver über
+   dieselben Scheduled Tasks wie beim vorherigen Neustart neu gestartet.
+4. Nach Neustart: Aufruf lief **fehlerfrei durch** — beide Objekte gefunden, Funktion
+   aufgerufen, Rückgabewert `nil` (kein direkter Return-String über den Lua-Weg).
+5. **Endgültige Bestätigung**, nachdem der Nutzer sich (nach einem zwischenzeitlichen,
+   unabhängigen Client-seitigen Unreal-Crash auf seinem eigenen Notebook — nicht
+   server- oder testbezogen) wieder verbunden hatte: `native_telemetry` meldet
+   `isGodMode: false` — **der Aufruf hat tatsächlich gewirkt**, unabhängig von Herbies
+   Mod und vom Probe selbst gemessen.
+
+Nebenbefund während der Diagnose: ein dritter Testserver-Neustart (separat von den
+beiden selbst ausgelösten) fiel zeitlich mit dem Nutzer-Crash zusammen — durch Prüfung
+des rotierten `SCUM.log` als sauberer, geplanter Shutdown identifiziert (ordentliches
+Modul-für-Modul-Herunterfahren, kein Exception-/Crash-Log, nicht über die
+"Manual Stop/Start"-Tasks ausgelöst wie unsere eigenen Neustarts) — passt zum
+bekannten festen Restart-Rhythmus des Servers, komplett unabhängig von unserem Test.
+
+Aufräumen: `OpenScumRconProbe` wieder aus `mods.txt` entfernt (Backup vorher), damit es
+nicht bei jedem künftigen Neustart erneut denselben Befehl feuert. Kein zusätzlicher
+Neustart dafür ausgelöst — Änderung greift erst beim nächsten ohnehin fälligen Restart.
+
+Bedeutung: **Der in der Architekturplanung gefundene Mechanismus ist nicht mehr nur eine
+Hypothese aus einem Reflection-Dump, sondern nachweislich funktionsfähig**, end-to-end
+gegen einen echten Server mit echtem Spieler getestet. Damit ist der riskanteste Teil
+des Projekts (funktioniert der gefundene Hook überhaupt?) geklärt — übrig bleibt
+"nur" noch die Verpackung in ein natives C++-Modul mit echtem RCON-Listener.
+
+Ausdrücklich offen (nächster Schritt):
+
+- Wie genau die Textantwort erzeugt wird (Rückgabewert war `nil`) — vermutlich ein
+  Print-/Log-Seitenkanal, muss für eine echte RCON-Antwort abgefangen werden.
+- Verhalten bei ungültigen/verweigerten Befehlen (Fehlertexte, Berechtigungsprüfung)
+  noch nicht getestet.
+- Portierung von der Lua-Diagnose auf die eigentliche native C++-Implementierung
+  (`ProcessEvent` statt Lua-Metamethode) sowie der RCON-Listener selbst.
+
 ## 2026-09-04, Abend (Teil 2) — Herbies eigenes Log als zusätzliche, legitime Bestätigungsquelle
 
 Anlass: Herbies `scum_rcon`-Mod läuft auf demselben Testserver noch aktiv (Lizenzserver

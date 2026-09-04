@@ -96,14 +96,24 @@ bereits vorhandenen, offiziell reflektierten Eintrittspunkt, der diese ganze int
 Maschinerie kapselt. Kein Fallback auf AOB-Scanning/Vtable-Patching nötig, solange dieser
 eine Eintrittspunkt zuverlässig funktioniert.
 
-**Noch zu verifizieren** (nächster Schritt, noch nicht getestet):
+**Verifiziert (2026-09-04, Nacht):** `Test_ProcessAdminCommand` wurde per UE4SS-Lua
+gegen einen echten Testserver mit online verbundenem Spieler aufgerufen
+(`MiscStatics:Test_ProcessAdminCommand(GameInstance, "SetGodMode false <steamId>")`) —
+**GodMode wurde dadurch tatsächlich deaktiviert**, unabhängig bestätigt über
+`native_telemetry` (komplett separates System, weder Herbies Mod noch der Test-Probe
+selbst). Der Mechanismus funktioniert nachweislich, nicht nur theoretisch. Details zum
+Testaufbau: `docs/CHANGELOG.md`.
 
-- Tatsächlicher Aufruf gegen den Testserver (aktuell nur per Reflection-Dump *gefunden*,
-  noch nicht *aufgerufen*).
+**Noch offen:**
+
 - Ob `Test_ProcessAdminCommand` denselben Autorisierungs-/Antwortweg nutzt wie ein echter
   Admin (inkl. der von SCUM selbst gemeldeten Fehlertexte) oder eine vereinfachte
   Testvariante ist, die z. B. Berechtigungsprüfungen anders handhabt.
-- Rückgabeformat/-mechanismus der Funktion.
+- Rückgabeformat/-mechanismus der Funktion — bestätigt `nil`/kein direkter Rückgabewert
+  über den Lua-Aufrufweg; wie die Textantwort (z. B. "God mode set to true.", die Herbies
+  RCON zurückgibt) tatsächlich erzeugt/übertragen wird, ist noch offen (vermutlich ein
+  Print-/Log-Seitenkanal, analog zu Herbies eigenem Chat-Capture-Hook, siehe
+  `docs/CHANGELOG.md`).
 - Ob `Test_`-Funktionen in einem Shipping-Build zuverlässig über Spiel-Updates hinweg
   erhalten bleiben (Name klingt nach Entwickler-/Testwerkzeug — könnte in einer
   zukünftigen SCUM-Version entfernt werden; deshalb bleibt Namensauflösung per
