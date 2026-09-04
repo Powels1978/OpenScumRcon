@@ -1,4 +1,4 @@
-set(TARGET ScumRconNative)
+set(TARGET OpenScumRconNative)
 
 add_library(${TARGET} SHARED
     src/dllmain.cpp

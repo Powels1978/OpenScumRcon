@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.22)
 
-project(ScumRcon LANGUAGES CXX)
+project(OpenScumRcon LANGUAGES CXX)
 
 # UE4SS-Entwicklungsbaum wird nicht mitversioniert (eigene, große Historie).
 # Erwartet unter vendor/RE-UE4SS/ oder per -DUE4SS_DIR=<pfad> beim Konfigurieren.

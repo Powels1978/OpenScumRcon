@@ -1,4 +1,4 @@
-# Scum_RCON
+# OpenScumRcon
 
 Ein eigenständiger, quelloffen einsehbarer Ersatz für [`herbie96x/SCUM-RCON`](https://github.com/herbie96x/SCUM-RCON) —
 einen echten [Source-RCON](https://developer.valvesoftware.com/wiki/Source_RCON_Protocol)-Server
