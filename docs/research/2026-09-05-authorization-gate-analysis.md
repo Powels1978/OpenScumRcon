@@ -91,25 +91,111 @@ Signatur: `func(RCX=this /* dieselbe UAdminCommand-Instanz? */, R8=Ausgabe-FStri
 | `+0x58` | Fließkomma-Zeitstempel für Cooldown |
 | `+0x28` | Datenblock, per Zeiger an `0x141A45AA0` übergeben (`R9`) |
 
+## Update 2026-09-05 (Folgesession): `0x141A45AA0` und `0x141A4D050` disassembliert
+
+Mit dem neuen `dumpFunctionAt()`-Feature von `PeXrefScanner` (lineare Disassemblierung
+ab einer bekannten VA statt nur Xref-Suche) wurden beide Zielfunktionen direkt
+disassembliert. Rohdaten:
+[`pexref_funcdump_report_2026-09-05.txt`](pexref_funcdump_report_2026-09-05.txt).
+
+### `0x141A4D050` — trivialer Feld-Zugriff, keine komplexe Auflösung
+
+Die gesamte Funktion besteht aus zwei Instruktionen:
+
+```
+lea rax, [rcx+0x690]
+ret
+```
+
+Das heißt: `0x141A4D050(RCX=R15)` liefert einfach `R15 + 0x690` zurück — einen
+**eingebetteten Unterobjekt-Zeiger innerhalb des "Executor"-Arguments**, keine
+Objektauflösung, keine Lookup-Logik. Die als `rbp` bezeichnete Variable in
+Funktion A (Schritt 6/7 der ursprünglichen Analyse) ist also schlicht
+`Executor + 0x690`.
+
+### `0x141A45AA0` — Berechtigungsstufen-Dispatcher mit Cascading-Fallback
+
+Signatur bestätigt: `func(RCX=this /* Registry/Manager-Objekt, aus
+[EAX+0x118] in Funktion A */, RDX=rbp /* Executor+0x690 */, R8B=Berechtigungsstufe
+[cmd+0x52], R9=&cmd[0x28] /* Kommando-Identität */) -> bool`.
+
+Ablauf (vollständig nachvollzogen bis `ret`):
+
+1. Sperrt eine kritische Sektion bei `this+0x698` (`call [0x145139770]` = Lock,
+   `call [0x145139778]` = Unlock am Ende — feste Thunk-Adressen, keine virtuellen
+   Aufrufe).
+2. **Switch über die Berechtigungsstufe** (`R8B`, Werte 0–4, alles ≥5 oder negativ
+   → sofort `false`):
+   - **Stufe 0 → immer `true`**, ganz ohne jede Identitätsprüfung. Das ist der
+     wichtigste Einzelfund dieser Session (siehe "Praktische Konsequenz" unten).
+   - **Stufe 1**: Lookup von `rbp` als Key in einem Set/einer Sparse-Array bei
+     `this+0x6C0` (Elementgröße `0x78` Bytes). Gefunden → `true`. Nicht gefunden
+     → **fällt durch zu Stufe 2** (kein `return false`, sondern Fallthrough!).
+   - **Stufe 2**: identischer Lookup in `this+0x6C0` mit demselben Key `rbp`
+     (offenbar dieselbe Struktur, evtl. weil Stufe 1/2 zwei Sub-Fälle derselben
+     Rechte-Gruppen-Prüfung sind). Bei Treffer wird zusätzlich im gefundenen
+     Eintrag bei `Eintrag+0x20` ein **verschachteltes Set konkreter erlaubter
+     Kommando-IDs** durchsucht, Key = `R9` (`&cmd[0x28]`, die Kommando-Identität
+     selbst). Nur wenn *sowohl* die Gruppe gefunden wird *als auch* dieses
+     spezielle Kommando in der Gruppen-Erlaubnisliste steht → `true`. Sonst
+     Fallthrough zu Stufe 3.
+   - **Stufe 3**: liest `this+0xE8`/`this+0xEC` (zwei Rollen-/Flag-Felder auf dem
+     Registry-Objekt selbst, nicht auf `rbp`!) und vergleicht sie über
+     `0x142AF9AE0(role, konstante)` gegen `0` bzw. `0x11A` (282) — vermutlich ein
+     globaler "aktueller Ausführungskontext" (z. B. Server-Konsole vs.
+     RPC-Aufruf). Bei Erfolg zusätzlich ein Callback `0x143ECC150(this)`. Sonst:
+     Lookup von `rbp` in einem **weiteren, eigenständigen Set** bei `this+0x8A0`
+     (`0x141A2C770`) — das sieht nach einer direkten Einzel-Executor-Whitelist aus
+     (unabhängig von Gruppen — passt konzeptionell zu "einzelne SteamID
+     freigeschaltet", auch wenn strukturell nichts mit `AdminUsers.ini` selbst zu
+     tun hat, wie der Nutzer bereits klargestellt hatte). Treffer → `true`, sonst
+     Fallthrough zu Stufe 4.
+   - **Stufe 4**: ein einziger Aufruf `0x141F24E20(rbp)` → `bool`. Vermutlich ein
+     globaler "ist das ein Server-/Entwickler-Executor"-Check. `true` → erlaubt,
+     `false` → endgültige Ablehnung (`"Not authorized to execute command"`).
+3. Entsperrt die kritische Sektion, gibt das Ergebnis zurück.
+
+### Praktische Konsequenz
+
+**Wenn ein Kommando sein Berechtigungsstufen-Byte (`this+0x52` auf der
+`UAdminCommand_*`-Instanz) auf `0` stehen hat, prüft `0x141A45AA0` überhaupt
+keine Identität — es liefert unconditional `true`.** Das ist der einzige Pfad,
+der komplett ohne gültigen `Executor`-Inhalt auskommt (alle anderen Stufen
+brauchen einen `rbp`, der in mindestens einer der Registry-Strukturen als
+gültiger Schlüssel auftaucht — bei unserem synthetischen `ProcessEvent`-Aufruf,
+der kein echtes Spieler-`Executor`-Objekt mitbringt, ist das mit hoher
+Wahrscheinlichkeit nie der Fall).
+
+Nächster sinnvoller Schritt: **herausfinden, welches Berechtigungsstufen-Byte
+`SetGodMode` (bzw. allgemein: welche der ~230 `UAdminCommand_*`-Klassen welche
+Stufe) tatsächlich hat.** Das lässt sich vermutlich per Reflection zur Laufzeit
+auslesen (Feld `+0x52` relativ zum `UAdminCommand_*`-Instanzbeginn, sofern die
+UE4SS-Objektinspektion Zugriff auf rohe Instanzbytes erlaubt) — deutlich
+risikoärmer als ein In-Memory-Hook auf `0x141A45AA0` selbst.
+
 ## Noch offen (nächster Schritt)
 
-- `0x141A45AA0` und `0x141A4D050` selbst disassemblieren (waren nicht Teil dieses
-  ersten Scans — nur die Aufrufstellen wurden gefunden, nicht die Zielfunktionen
-  verfolgt) — das ist der eigentliche Kern der Berechtigungsprüfung.
-- Klären, was `RDX`/`R15` (das zweite Argument von Funktion A) tatsächlich ist —
-  Arbeitshypothese: der "Executor" (vgl. `UAdminCommandExecutor` aus der
-  Reflection-Analyse vom Vortag). Falls bestätigt: das wäre das fehlende Bindeglied
-  zwischen `Test_ProcessAdminCommand`s `WorldContextObject`-Parameter und dieser
-  nativen Prüfung — vermutlich wird intern aus dem `WorldContextObject` erst ein
-  `UAdminCommandExecutor` konstruiert/aufgelöst, und *diese Auflösung* liefert bei
-  unserem synthetischen Aufruf vermutlich ein Objekt, das die Prüfung in
-  `0x141A45AA0` nicht besteht (oder `RBP`/`R15`-Kette bleibt leer/ungültig).
-- Sobald die Semantik von `0x141A45AA0` klar ist: entweder (a) einen Weg finden,
-  einen validen Executor synthetisch zu erzeugen, der die Prüfung besteht, oder
-  (b) einen In-Memory-Hook auf `0x141A45AA0` selbst setzen, der für unsere eigenen
-  Aufrufe `true` erzwingt (das klassische, von DeveloperMode konzeptionell
-  beschriebene Vorgehen — hier aber eigenständig anhand unserer eigenen Analyse
-  gefunden, nicht von dort übernommen).
+- Berechtigungsstufen-Byte (`+0x52`) für `SetGodMode` und andere Zielkommandos
+  zur Laufzeit auslesen (siehe "Praktische Konsequenz" oben) — falls es bereits
+  `0` ist, sollte der native Aufruf ohne jede weitere Änderung funktionieren und
+  das eigentliche Problem läge woanders (z. B. in der stillen Vtable-Prüfung
+  `[RSI-Vtable][+0x278]` aus Funktion A, die VOR `0x141A45AA0` liegt und bei
+  `false` ganz ohne Meldung abbricht — das wäre dann der nächste Verdächtige).
+- Falls die Stufe >0 ist: klären, ob `Executor+0x690` bei unserem synthetischen
+  Aufruf überhaupt ein sinnvolles/nicht-null Objekt ist (Crash-Risiko beachten,
+  falls `Executor` selbst schon ungültig ist — vorsichtig per Reflection
+  inspizieren, nicht blind dereferenzieren).
+- Die Helper-Funktionen `0x1426F00C0` (Registrierungscheck vor dem
+  Vtable-Gate), `0x141A4A7E0`/`0x1412D59C0` (Set-Lookup-Hilfsfunktionen) und
+  `0x142AF9AE0`/`0x141F24E20`/`0x141A2C770` (Stufe-3/4-Helfer) sind bisher nur
+  aus ihrem Aufrufkontext heraus interpretiert, nicht selbst disassembliert —
+  bei Bedarf mit demselben `dumpFunctionAt()`-Mechanismus nachholbar.
+- Sobald klar ist, warum unser Aufruf tatsächlich scheitert: entweder (a) einen
+  Weg finden, einen validen Executor synthetisch zu erzeugen bzw. ein Kommando
+  mit Stufe 0 zu nutzen, oder (b) einen In-Memory-Hook auf `0x141A45AA0` selbst
+  setzen, der für unsere eigenen Aufrufe `true` erzwingt (das klassische, von
+  DeveloperMode konzeptionell beschriebene Vorgehen — hier aber eigenständig
+  anhand unserer eigenen Analyse gefunden, nicht von dort übernommen).
 
 ## Werkzeug
 

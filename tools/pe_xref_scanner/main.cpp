@@ -213,6 +213,46 @@ namespace
             runtimeAddress += instr.info.length;
         }
     }
+
+    // Straight linear disassembly starting at a known virtual address (as
+    // opposed to dumpContext, which centers a window around an xref hit).
+    // Used for explicitly-targeted follow-up analysis once a function
+    // address is already known (e.g. the callee of an xref, not the xref
+    // site itself). Stops early at `ret` if one is found with no
+    // outstanding unresolved jumps tracked - this is a best-effort human-
+    // readable dump, not a real control-flow-aware decompiler.
+    void dumpFunctionAt(const PeImage& image, std::uint64_t va, std::size_t maxBytes,
+                         const std::string& label, std::ofstream& out)
+    {
+        out << "\n=== FUNCTION DUMP: " << label << " at VA 0x" << std::hex << va << std::dec << " ===\n";
+        const auto rva = va - image.imageBase;
+        const auto fileOffsetSigned = image.rvaToFileOffset(rva);
+        if (fileOffsetSigned < 0)
+        {
+            out << "  <VA not found in any section>\n";
+            return;
+        }
+        std::size_t offset = static_cast<std::size_t>(fileOffsetSigned);
+        const std::size_t end = std::min(image.bytes.size(), offset + maxBytes);
+        std::uint64_t runtimeAddress = va;
+        while (offset < end)
+        {
+            ZydisDisassembledInstruction instr;
+            const auto status = ZydisDisassembleIntel(
+                    ZYDIS_MACHINE_MODE_LONG_64, runtimeAddress,
+                    image.bytes.data() + offset, end - offset, &instr);
+            if (!ZYAN_SUCCESS(status))
+            {
+                out << "  <decode failed at file offset 0x" << std::hex << offset << std::dec << ">\n";
+                ++offset;
+                ++runtimeAddress;
+                continue;
+            }
+            out << "  0x" << std::hex << runtimeAddress << std::dec << "  " << instr.text << "\n";
+            offset += instr.info.length;
+            runtimeAddress += instr.info.length;
+        }
+    }
 }
 
 int main(int argc, char** argv)
@@ -339,6 +379,17 @@ int main(int argc, char** argv)
 
     std::cerr << "Decoded " << instructionCount << " instructions, found " << xrefCount << " xref(s) to target strings.\n";
     out << "\n\nSummary: decoded " << instructionCount << " instructions, found " << xrefCount << " xref(s).\n";
+
+    // Optional: dump specific already-known function addresses directly
+    // (follow-up analysis once an xref pointed us at a callee address).
+    // Usage: PeXrefScanner <exe> <out.txt> 0x141A45AA0 0x141A4D050 ...
+    for (int i = 3; i < argc; ++i)
+    {
+        const std::uint64_t va = std::stoull(argv[i], nullptr, 16);
+        std::cerr << "Dumping function at VA 0x" << std::hex << va << std::dec << "...\n";
+        dumpFunctionAt(image, va, 1024, argv[i], out);
+    }
+
     std::cout << "Done. Decoded " << instructionCount << " instructions, found " << xrefCount << " xref(s). Report: " << outputPath << "\n";
     return 0;
 }

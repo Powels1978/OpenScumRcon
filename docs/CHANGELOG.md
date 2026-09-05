@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-09-05 (Folgesession) — Autorisierungs-Gate-Funktionen disassembliert
+
+`PeXrefScanner` um `dumpFunctionAt()` erweitert (lineare Disassemblierung ab einer
+bekannten virtuellen Adresse, statt nur Xref-Suche nach Strings) und damit
+`0x141A45AA0` und `0x141A4D050` direkt untersucht — die beiden Funktionen, deren
+Aufrufstellen in der vorherigen Session gefunden, aber nicht selbst analysiert
+wurden.
+
+Kernfunde (Details: [`docs/research/2026-09-05-authorization-gate-analysis.md`](research/2026-09-05-authorization-gate-analysis.md#update-2026-09-05-folgesession-0x141a45aa0-und-0x141a4d050-disassembliert)):
+
+- `0x141A4D050` ist trivial: `return Executor + 0x690;` — kein komplexer
+  Auflösungsschritt, nur ein Feldzugriff.
+- `0x141A45AA0` ist ein **Berechtigungsstufen-Dispatcher** (Switch über ein Byte
+  auf der Kommando-Instanz, Werte 0–4 mit Cascading-Fallback zur jeweils
+  nächsten Stufe). **Stufe 0 liefert unconditional `true` — ganz ohne jede
+  Identitätsprüfung.** Alle anderen Stufen benötigen einen gültigen Treffer in
+  einer von mehreren Registry-Strukturen (Gruppen-Set, Einzel-Executor-Set,
+  Rollen-Flags), abhängig vom `Executor+0x690`-Objekt.
+- Nächster Schritt: per Reflection auslesen, welche Berechtigungsstufe
+  `SetGodMode` (und andere Zielkommandos) tatsächlich hat — Kommandos mit Stufe
+  0 sollten über unseren synthetischen `ProcessEvent`-Aufruf ohne weitere
+  Änderungen funktionieren.
+
+Rohdaten: [`docs/research/pexref_funcdump_report_2026-09-05.txt`](research/pexref_funcdump_report_2026-09-05.txt).
+
 ## 2026-09-04 — Projekt-Setup und Architekturentscheidung
 
 Anlass: `herbie96x/SCUM-RCON` wurde vom Entwickler End-of-Life erklärt (Repository
