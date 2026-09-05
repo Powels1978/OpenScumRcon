@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <future>
 #include <vector>
 
@@ -21,6 +22,20 @@ namespace openscumrcon
     {
         constexpr int RESPONSE_WAIT_TIMEOUT_SECONDS = 25;
 
+        // Temporary diagnostic logging while bringing the listener up for the
+        // first time against a live server - same file-append convention
+        // used elsewhere in this project (e.g. C:\PowelsLocalBridge\*.log).
+        // TODO: remove or gate behind a verbosity flag once the connection
+        // path is verified end-to-end.
+        void debug_log(const std::string& message)
+        {
+            std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_native_debug.log", std::ios::app);
+            if (file.is_open())
+            {
+                file << message << "\n";
+            }
+        }
+
         bool recv_exact(SOCKET sock, char* buffer, int size)
         {
             int received = 0;
@@ -29,6 +44,9 @@ namespace openscumrcon
                 const int n = recv(sock, buffer + received, size - received, 0);
                 if (n <= 0)
                 {
+                    debug_log("recv_exact failed: n=" + std::to_string(n)
+                              + " WSAGetLastError=" + std::to_string(WSAGetLastError())
+                              + " wanted=" + std::to_string(size) + " got=" + std::to_string(received));
                     return false;
                 }
                 received += n;
@@ -78,35 +96,54 @@ namespace openscumrcon
 
         void handle_connection(SOCKET client, const std::string& password, CommandQueue& queue)
         {
+            debug_log("handle_connection: entered");
+
             protocol::Packet auth_packet;
-            if (!recv_packet(client, auth_packet) || auth_packet.type != protocol::SERVERDATA_AUTH)
+            if (!recv_packet(client, auth_packet))
             {
+                debug_log("handle_connection: recv_packet(auth) failed");
+                closesocket(client);
+                return;
+            }
+            debug_log("handle_connection: auth packet received, type=" + std::to_string(auth_packet.type)
+                      + " id=" + std::to_string(auth_packet.request_id)
+                      + " payload_len=" + std::to_string(auth_packet.payload.size()));
+            if (auth_packet.type != protocol::SERVERDATA_AUTH)
+            {
+                debug_log("handle_connection: unexpected first packet type, expected AUTH");
                 closesocket(client);
                 return;
             }
 
             if (auth_packet.payload != password)
             {
+                debug_log("handle_connection: auth FAILED (password mismatch)");
                 const auto fail = protocol::encode_packet(-1, protocol::SERVERDATA_AUTH_RESPONSE, "");
                 send_all(client, fail.data(), static_cast<int>(fail.size()));
                 closesocket(client);
                 return;
             }
 
+            debug_log("handle_connection: auth OK, sending auth response");
             const auto ok = protocol::encode_packet(auth_packet.request_id, protocol::SERVERDATA_AUTH_RESPONSE, "");
             if (!send_all(client, ok.data(), static_cast<int>(ok.size())))
             {
+                debug_log("handle_connection: send_all(auth response) failed");
                 closesocket(client);
                 return;
             }
+            debug_log("handle_connection: auth response sent, entering command loop");
 
             while (true)
             {
                 protocol::Packet command_packet;
                 if (!recv_packet(client, command_packet))
                 {
+                    debug_log("handle_connection: recv_packet(command) failed/connection closed, exiting loop");
                     break;
                 }
+                debug_log("handle_connection: command packet received, type=" + std::to_string(command_packet.type)
+                          + " payload=[" + command_packet.payload + "]");
                 if (command_packet.type != protocol::SERVERDATA_EXECCOMMAND)
                 {
                     continue;
@@ -220,17 +257,21 @@ namespace openscumrcon
         }
 
         m_listen_socket = static_cast<long long>(listen_socket);
+        debug_log("run: listening on " + bind_host + ":" + std::to_string(port) + ", entering accept loop");
 
         while (m_running.load())
         {
             SOCKET client = accept(listen_socket, nullptr, nullptr);
             if (client == INVALID_SOCKET)
             {
+                debug_log("run: accept() returned INVALID_SOCKET, WSAGetLastError=" + std::to_string(WSAGetLastError()) + ", exiting loop");
                 break; // listen_socket was closed by stop(), or a real error - either way, exit.
             }
+            debug_log("run: accept() succeeded, handing off to handle_connection");
             // v1: handle one connection at a time on this same thread. See
             // header comment for why, and for the planned extension.
             handle_connection(client, password, *m_queue);
+            debug_log("run: handle_connection returned, looping back to accept()");
         }
 
         closesocket(listen_socket);

@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -10,6 +11,8 @@
 #include <Helpers/String.hpp>
 #include <Mod/CppUserModBase.hpp>
 #include <Unreal/Hooks/Hooks.hpp>
+#include <Unreal/UFunction.hpp>
+#include <Unreal/UObject.hpp>
 
 #include "admin_dispatch.hpp"
 #include "command_queue.hpp"
@@ -27,6 +30,20 @@ namespace
         unsigned short port = 28016; // deliberately NOT 28015 - that's Herbie's port, avoid clashing while both run side by side during testing
         std::string password = "changeme";
     };
+
+    // Minimal, self-contained wide->narrow conversion for the diagnostic
+    // logging below - deliberately NOT using UE4SS's own Helpers::to_utf8_string
+    // / ensure_str_as, which failed to compile against RC::Unreal::UObject's
+    // GetFullName() return type in this translation unit for reasons not
+    // worth chasing for temporary debug code.
+    std::string narrow(const std::wstring& wide)
+    {
+        if (wide.empty()) return {};
+        const int size = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+        std::string out(static_cast<std::size_t>(size), '\0');
+        WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), out.data(), size, nullptr, nullptr);
+        return out;
+    }
 
     Config load_config(const std::string& path)
     {
@@ -112,6 +129,34 @@ public:
                     drain_and_dispatch();
                 }, options);
 
+        // TEMPORARY diagnostic hook (2026-09-05): logs every UFunction call
+        // that happens WHILE dispatch_command() is executing on the game
+        // thread (m_capturing_calls guards this so it's silent the rest of
+        // the time - without that guard this would log every ProcessEvent
+        // call in the entire game, thousands per second). Goal: find out
+        // whether Test_ProcessAdminCommand reaches any real internal SCUM
+        // logic at all when called via our synthetic PlayerController
+        // context, since the call currently produces no observable effect.
+        // See docs/CHANGELOG.md for the full context. Remove once answered.
+        RC::Unreal::Hook::FCallbackOptions captureOptions{};
+        captureOptions.OwnerModName = ModName;
+        captureOptions.HookName = STR("OpenScumRconCaptureNestedCalls");
+        captureOptions.bReadonly = true;
+        RC::Unreal::Hook::RegisterProcessEventPreCallback(
+                [this](RC::Unreal::Hook::TCallbackIterationData<void>&, RC::Unreal::UObject* context, RC::Unreal::UFunction* function, void*) {
+                    if (!m_capturing_calls.load(std::memory_order_relaxed))
+                    {
+                        return;
+                    }
+                    std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_capture_nested.log", std::ios::app);
+                    if (file.is_open())
+                    {
+                        const std::string contextName = context ? narrow(context->GetFullName()) : std::string{};
+                        const std::string functionName = function ? narrow(function->GetFullName()) : std::string{};
+                        file << "context=[" << contextName << "] function=[" << functionName << "]\n";
+                    }
+                }, captureOptions);
+
         if (!m_rcon_server.start(config.bind_host, config.port, config.password, m_queue))
         {
             RC::Output::send<RC::LogLevel::Error>(STR("[OpenScumRconNative] RconServer failed to start\n"));
@@ -135,14 +180,18 @@ private:
             std::string response;
             try
             {
+                m_capturing_calls.store(true, std::memory_order_relaxed);
                 response = m_dispatch.dispatch_command(item.command_text);
+                m_capturing_calls.store(false, std::memory_order_relaxed);
             }
             catch (const std::exception& ex)
             {
+                m_capturing_calls.store(false, std::memory_order_relaxed);
                 response = std::string("error: exception during dispatch: ") + ex.what();
             }
             catch (...)
             {
+                m_capturing_calls.store(false, std::memory_order_relaxed);
                 response = "error: unknown exception during dispatch";
             }
             item.response.set_value(std::move(response));
@@ -153,6 +202,7 @@ private:
     openscumrcon::CommandQueue m_queue;
     openscumrcon::RconServer m_rcon_server;
     RC::Unreal::Hook::GlobalCallbackId m_engine_tick_callback = RC::Unreal::Hook::ERROR_ID;
+    std::atomic<bool> m_capturing_calls{false};
 };
 
 #define OPEN_SCUM_RCON_NATIVE_API __declspec(dllexport)
