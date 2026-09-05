@@ -356,6 +356,78 @@ Ausdrücklich offen (nächster Schritt):
 - Falls das nicht reicht: Array-of-Bytes-Scan auf die beiden Autorisierungs-Gates
   (eigenständig implementiert, kein Code von Herbie/DeveloperMode übernommen).
 
+## 2026-09-05 — Reflection-Grenze erreicht: kein einziger nachgelagerter Funktionsaufruf beobachtbar
+
+Anlass: Live-Deploy der ersten echten nativen C++-Implementierung (RCON-Server,
+Command-Queue, `AdminDispatch` mit `ConZPlayerController`-Kontext statt
+`GameInstance`) auf den Testserver, end-to-end getestet. Zusätzlich: Nutzer-Hinweis,
+dass `AdminUsers.ini`-Einträge wie `76561198023499707[godmode]` ein reguläres,
+selbst konfigurierbares SCUM-Feature sind — der Tag legt fest, dass dieser Admin
+GodMode nutzen (aktivieren/deaktivieren) darf; kein Hinweis auf einen fehlerhaften
+Dateieintrag, wie zuvor fälschlich vermutet (siehe Korrektur unten).
+
+**Deploy-Verifikation**: eigener Winsock2-RCON-Server (Port 28016, parallel zu
+Herbies 28015) läuft stabil, kompletter Roundtrip funktioniert
+(TCP-Connect → Auth → Command → Worker-Thread-Queue →
+`EngineTick`-Game-Thread-Drain → `ProcessEvent`-Aufruf → Antwort-Paket zurück an
+den Client). Verifiziert per eigenem PowerShell-RCON-Testclient direkt auf dem
+Server (localhost, um Netzwerk-/Firewall-Fragen auszuschließen — ein initialer
+Windows-Firewall-Prompt für den neu lauschenden Port musste einmalig vom Nutzer
+bestätigt werden).
+
+**Versehentlicher Fehlgriff (sofort korrigiert)**: Da der erste `SetGodMode`-Test
+über unseren eigenen `PlayerController`-Kontext wieder keine Wirkung zeigte, wurde
+`AdminUsers.ini` fälschlich als "falsch formatiert" vermutet und probeweise auf
+eine SteamID ohne `[godmode]`-Tag geändert. Nutzer korrigierte: das Tag ist
+korrektes, beabsichtigtes SCUM-Verhalten (Anti-Cheat-Whitelist — ohne den Tag würde
+ein Spieler mit aktivem GodMode beim ersten Erkennen gekickt und gebannt). Eintrag
+sofort auf den Originalzustand zurückgesetzt.
+
+**Der eigentliche Durchbruch in der Diagnose**: ein temporärer, global registrierter
+`ProcessEvent`-Pre-Hook (aktiv nur während unseres eigenen `dispatch_command()`-
+Aufrufs, über ein Atomic-Flag gesteuert) sollte zeigen, welche internen
+Funktionsaufrufe `Test_ProcessAdminCommand` auslöst. Ergebnis: **53 aufgezeichnete
+Zeilen, davon 52 komplett unabhängiges Hintergrundrauschen** (der bereits
+produktiv laufende, separate `native_telemetry`-Mod fragt im selben Zeitfenster
+routinemäßig Zombie-`GetHealth()`/`IsAlive()` ab — zufällige zeitliche
+Überlappung, keine Kausalität). Die **einzige tatsächlich durch unseren Aufruf
+verursachte Zeile ist der Aufruf selbst** (`Test_ProcessAdminCommand`) — **keine
+einzige nachgelagerte, per Reflection sichtbare Funktion wurde ausgelöst.**
+
+**Schlussfolgerung**: `Test_ProcessAdminCommand` führt seine gesamte interne Logik
+(Befehl parsen, `AdminCommandRegistry` nachschlagen, `UAdminCommand_SetGodMode`
+ausführen, Autorisierung prüfen) in reinem, nicht-reflektiertem C++ aus, das nie
+wieder durch `ProcessEvent` geht. Das erklärt rückwirkend auch, warum der frühere
+`CallFunctionByNameWithArguments`-Hook-Versuch nichts fing — es gibt auf dieser
+Ebene schlicht nichts zu beobachten. Arbeitshypothese für das Ausbleiben der
+Wirkung: die Autorisierungsprüfung liest vermutlich nicht live aus
+`AdminUsers.ini`, sondern prüft ein In-Memory-Flag auf dem `PlayerController`
+(z. B. `bIsAdmin`), das nur beim echten Admin-Login/-Spawn gesetzt wird — unser
+synthetischer `ProcessEvent`-Aufruf umgeht diesen Session-Zustand nicht, egal wie
+die Datei aussieht.
+
+**Bedeutung für die Architektur**: Reflection-basierte Beobachtung (UE4SS-Hooks auf
+Standard-Engine-Funktionen) hat ihre Grenze erreicht. Der nächste Schritt ist
+zwingend echtes natives Hooking — Array-of-Bytes-Scan auf die tatsächliche
+Autorisierungs-/Dispatch-Funktion im Serverbinary selbst, analog zum öffentlich
+beschriebenen (aber nicht kopierten) Konzept aus Herbies und DeveloperModes eigener
+Dokumentation. Das ist ein eigenständiges, größeres Arbeitspaket, keine
+Erweiterung der bisherigen reflection-basierten Implementierung.
+
+Nebenbei erledigt (auf Nutzerwunsch): `docs/REFERENCES.md` neu angelegt (Valve-RCON-
+Spec, Herbie, DeveloperMode, ggCON/GGHost gesammelt) — ggCON nutzt ebenfalls
+Standard-Source-RCON, verrät aber wie Herbie keine internen Dispatch-Details.
+
+Ausdrücklich offen (nächster Schritt):
+
+- Natives AOB-Scanning + Hooking der tatsächlichen Autorisierungs-/Dispatch-
+  Funktion(en) im SCUM-Serverbinary — eigener Arbeitsblock, nicht mehr
+  reflection-basiert.
+- Alternative, noch nicht ausprobierte Idee: prüfen, ob es einen Weg gibt, das
+  `bIsAdmin`-artige In-Memory-Flag (falls vorhanden) auf dem `PlayerController`
+  direkt zu setzen/zu lesen, um die Hypothese zu verifizieren, bevor der
+  aufwendigere AOB-Scan-Weg begonnen wird.
+
 ## 2026-09-04, Nacht (Teil 3) — Versuch, Herbies Aufrufweg per Engine-Hook mitzuschneiden (ergebnislos, aber lehrreich)
 
 Anlass: Nutzer-Idee — statt nur zu vermuten, WIE Herbies Dispatch funktioniert, den
