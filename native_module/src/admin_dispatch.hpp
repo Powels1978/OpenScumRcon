@@ -53,6 +53,18 @@ namespace openscumrcon
         // check once this can be tested live.
         std::string dispatch_command(const std::string& raw_command_text);
 
+        // Diagnostic (2026-09-05): reads the raw permission-level byte
+        // (offset +0x52 on every UAdminCommand_* instance/CDO - see
+        // docs/research/2026-09-05-authorization-gate-analysis.md) so we can
+        // find out whether SetGodMode's permission level is 0 (the one level
+        // 0x141A45AA0 grants unconditionally, no Executor identity needed).
+        // Read-only: these are the exact same bytes UAdminCommand::Execute()
+        // itself dereferences on every admin command call, so reading them
+        // here carries the same safety profile as the game's own code path.
+        // Triggered via a sentinel RCON command (see dllmain.cpp), not a
+        // real SCUM command - safe to call with nobody online.
+        std::string dump_admin_command_permission_levels() const;
+
         bool is_initialized() const { return m_initialized; }
 
     private:

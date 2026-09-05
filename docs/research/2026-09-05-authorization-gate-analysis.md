@@ -173,6 +173,90 @@ auslesen (Feld `+0x52` relativ zum `UAdminCommand_*`-Instanzbeginn, sofern die
 UE4SS-Objektinspektion Zugriff auf rohe Instanzbytes erlaubt) — deutlich
 risikoärmer als ein In-Memory-Hook auf `0x141A45AA0` selbst.
 
+## Update 2026-09-05 (2. Folgesession): `_requiredExecutorLevel` ist ein reflektiertes Property — und bei praktisch allen Kommandos = 4
+
+Statt die per Disassemblierung gefundenen Byte-Offsets (`+0x50`/`+0x51`/`+0x52`) hart
+im eigenen Code zu verankern (was bei jedem SCUM-Update erneut brechen würde), wurde
+geprüft, ob diese Felder echte, reflektierte `UPROPERTY`s sind — das native RCON-Modul
+läuft jetzt einmalig über `UStruct::TFieldRange<FProperty>` (UE4SS-eigene
+Reflection-API) statt über rohe Pointer-Arithmetik. Ergebnis: **ja, es sind ganz
+normale reflektierte Felder**, mit sprechenden Namen:
+
+| Property | Offset | Typ | Entspricht |
+|---|---|---|---|
+| `_isEnabled` | 80 (0x50) | BoolProperty | vermutete `bEnabled` |
+| `_isEnabledInShippingBuild` | 81 (0x51) | BoolProperty | vermutete Shipping-Sperre |
+| `_requiredExecutorLevel` | 82 (0x52) | **EnumProperty** | die Berechtigungsstufe aus `0x141A45AA0` |
+| `_shouldExecuteOnServer`/`_shouldExecuteOnClient` | 83/84 | BoolProperty | — |
+| `_hasCooldown`/`_cooldown` | 86/88 | Bool/Float | Cooldown-Timer |
+
+Rohdaten (alle ~230 `AdminCommand_*`-Objekte, per Reflection ausgelesen):
+[`admin_command_permission_levels_2026-09-05.txt`](admin_command_permission_levels_2026-09-05.txt).
+
+**Kernfund**: `_requiredExecutorLevel` steht bei **jedem einzelnen** untersuchten
+Admin-Kommando (inkl. `SetGodMode`) auf dem Wert `4` — keine Streuung über die
+Stichprobe. Das bedeutet praktisch: von den vier Stufen in `0x141A45AA0` kommt für
+Admin-Kommandos nur Stufe 4 überhaupt zum Einsatz; Stufen 0–3 (Gruppen-Sets,
+Rollen-Flags, Einzel-Whitelist bei `+0x8A0`) sind für dieses konkrete Subsystem
+totes Gewicht — vermutlich eine generische, projektweit wiederverwendete
+Berechtigungs-Utility-Funktion, die auch anderswo in SCUM verwendet wird.
+
+Das vereinfacht die eigentliche Zielfrage erheblich: **es muss nur noch verstanden
+werden, was Stufe 4 (`0x141F24E20(Executor+0x690)`) prüft.**
+
+### `0x141F24E20` disassembliert: Lookup in einem global gecachten Admin-Set
+
+Rohdaten: [`pexref_funcdump_report2_2026-09-05.txt`](pexref_funcdump_report2_2026-09-05.txt).
+
+Ablauf (vollständig nachvollzogen bis `ret`):
+
+1. Baut eine temporäre `FString` auf dem Stack.
+2. Liest `[rbx+0]`/`[rbx+8]` (Datenzeiger/Anzahl eines Arrays auf dem
+   `Executor+0x690`-Objekt, `rbx` = das übergebene Argument) — bei einem leeren
+   Array wird stattdessen ein statischer Leerstring-Literal verwendet, sonst das
+   **erste Element** dieses Arrays.
+3. Weist dieses Element der temporären FString zu und berechnet einen 96-Bit-Hash
+   davon (drei Werte: `[rsp+0xF0]`/`[rsp+0xF8]`/`[rsp+0x100]`).
+4. Holt einen **einmalig lazy-initialisierten globalen Set-Zeiger** (klassisches
+   MSVC-"magic static"-Muster: Thread-Local-Storage-Guard bei `gs:[0x58]`,
+   atomarer Init-Zähler bei `0x14742A418`) — d. h. eine Datenstruktur, die genau
+   **einmal beim ersten Aufruf** aus irgendeiner Quelle aufgebaut und danach nur
+   noch gelesen wird.
+5. Durchsucht dieses Set linear nach einem Eintrag, dessen drei gespeicherte
+   Werte exakt dem berechneten Hash entsprechen. Treffer → `true`, sonst `false`.
+
+**Interpretation**: Das sieht exakt nach "ist der (Steam-)Identifier des Executors
+in einer einmalig geladenen, global gecachten Admin-Liste enthalten" aus — mit
+sehr hoher Wahrscheinlichkeit die zur Laufzeit aus `AdminUsers.ini` aufgebaute
+Admin-Menge. Das erste Element des Arrays bei `Executor+0x690` wäre dann
+vermutlich die SteamID64 (oder ein äquivalenter eindeutiger Identifier) als
+String.
+
+### Praktische Konsequenz: der Fehler liegt vermutlich VOR diesem Check, nicht in ihm
+
+Wenn diese Interpretation stimmt, MÜSSTE unser synthetischer Aufruf eigentlich
+funktionieren, sofern: (a) der von uns gewählte `WorldContextObject` (ein echter,
+verbundener `ConZPlayerController`) korrekt zu einem `Executor`-Objekt mit
+gültiger SteamID aufgelöst wird, UND (b) diese SteamID tatsächlich in
+`AdminUsers.ini` steht (beim Testaccount der Fall). Der naheliegendste
+verbleibende Verdächtige ist daher **nicht mehr Stufe 4 selbst**, sondern:
+
+- die **stille Null-Prüfung ganz am Anfang von Funktion A** (`0x1418c7b60`):
+  „`RDX`/`R15` auf null geprüft — bei null sofort... liefert `false`, keine
+  Meldung“ — falls `Test_ProcessAdminCommand` beim Aufruf über eine rohe
+  `ProcessEvent`-Reflection (statt über den echten
+  `PlayerRpcChannel::Chat_Server_ProcessAdminCommand`-RPC-Pfad) gar kein
+  gültiges `Executor`-Objekt aus unserem `WorldContextObject` konstruieren
+  kann — dann bliebe `R15` null, und die gesamte Kette (inklusive des hier
+  analysierten, korrekten Admin-Checks) würde nie erreicht.
+- oder die stille Vtable-Prüfung `[RSI-Vtable][+0x278]`, ebenfalls vor jeder
+  Meldungsausgabe.
+
+Nächster sinnvoller Schritt: die native Implementierung von
+`MiscStatics::Test_ProcessAdminCommand` selbst disassemblieren (Funktionszeiger
+über die bereits aufgelöste `UFunction*` beziehbar), um zu sehen, wie/ob sie
+intern überhaupt einen `Executor` aus dem `WorldContextObject` konstruiert.
+
 ## Noch offen (nächster Schritt)
 
 - Berechtigungsstufen-Byte (`+0x52`) für `SetGodMode` und andere Zielkommandos

@@ -180,9 +180,21 @@ private:
             std::string response;
             try
             {
-                m_capturing_calls.store(true, std::memory_order_relaxed);
-                response = m_dispatch.dispatch_command(item.command_text);
-                m_capturing_calls.store(false, std::memory_order_relaxed);
+                // Diagnostic sentinel (2026-09-05), not a real SCUM command -
+                // triggers AdminDispatch::dump_admin_command_permission_levels()
+                // instead of the normal dispatch path. See docs/research/
+                // 2026-09-05-authorization-gate-analysis.md for why. Checked
+                // before the '#' stripping/dispatch below on purpose.
+                if (item.command_text == "!dump_admin_permissions")
+                {
+                    response = m_dispatch.dump_admin_command_permission_levels();
+                }
+                else
+                {
+                    m_capturing_calls.store(true, std::memory_order_relaxed);
+                    response = m_dispatch.dispatch_command(item.command_text);
+                    m_capturing_calls.store(false, std::memory_order_relaxed);
+                }
             }
             catch (const std::exception& ex)
             {

@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-09-05 (3. Session) — Berechtigungsstufe per Reflection ausgelesen: SetGodMode braucht nur AdminUsers.ini-Eintrag
+
+Statt der zunächst geplanten rohen Speicher-Offsets wurde das native RCON-Modul
+um eine Diagnosefunktion erweitert, die SCUMs eigene UE4SS-Reflection-API
+(`UStruct::TFieldRange<FProperty>`) nutzt, um die Flag-Bytes aus der letzten
+Session als das zu lesen, was sie tatsächlich sind: ganz normale reflektierte
+`UPROPERTY`-Felder (`_isEnabled`, `_isEnabledInShippingBuild`,
+`_requiredExecutorLevel`, `_hasCooldown`/`_cooldown`) — portabler als hart
+codierte Offsets, da UE4SS die aktuelle Speicherlayout-Information direkt aus
+der laufenden Binary liest.
+
+Deploy + Neustart des Testservers (niemand außer dem Nutzer online), Trigger
+über einen Sentinel-RCON-Befehl (`!dump_admin_permissions`). Ergebnis: der
+Scan über alle UObjects im laufenden Spiel blockierte kurz den Game-Thread
+(länger als das 25s-RCON-Timeout, Server danach wieder normal) - für künftige
+Diagnosen sollte das gezielter (z. B. nur die Klassen selbst, nicht alle
+Instanzen) laufen.
+
+**Kernfund**: `_requiredExecutorLevel` ist bei praktisch jedem der ~230
+Admin-Kommandos (inkl. `SetGodMode`) auf Stufe 4. `0x141F24E20`
+(die Prüfung für Stufe 4) wurde disassembliert und sieht nach einem Lookup in
+einer einmalig lazy-initialisierten, global gecachten Admin-Menge aus — mit
+hoher Wahrscheinlichkeit die aus `AdminUsers.ini` geladene Admin-Liste.
+
+**Konsequenz**: der eigentliche Blocker liegt vermutlich nicht mehr in der
+Berechtigungsprüfung selbst, sondern VOR ihr — z. B. darin, dass
+`Test_ProcessAdminCommand` bei einem rohen `ProcessEvent`-Reflection-Aufruf
+(statt über den echten `PlayerRpcChannel`-RPC-Pfad) gar kein gültiges
+`Executor`-Objekt aus dem `WorldContextObject` konstruieren kann. Nächster
+Schritt: `Test_ProcessAdminCommand`s native Implementierung selbst
+disassemblieren.
+
+Details: [`docs/research/2026-09-05-authorization-gate-analysis.md`](research/2026-09-05-authorization-gate-analysis.md).
+
 ## 2026-09-05 (Folgesession) — Autorisierungs-Gate-Funktionen disassembliert
 
 `PeXrefScanner` um `dumpFunctionAt()` erweitert (lineare Disassemblierung ab einer

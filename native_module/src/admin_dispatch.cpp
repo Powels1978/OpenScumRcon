@@ -1,9 +1,17 @@
 #include "admin_dispatch.hpp"
 
+#include <cstdint>
+#include <fstream>
+#include <sstream>
+
+#define NOMINMAX
+#include <windows.h>
+
 #include <DynamicOutput/DynamicOutput.hpp>
 #include <Helpers/String.hpp>
 #include <Unreal/Core/Containers/FString.hpp>
 #include <Unreal/CoreUObject/UObject/Class.hpp>
+#include <Unreal/CoreUObject/UObject/UnrealType.hpp>
 #include <Unreal/UObjectGlobals.hpp>
 
 using namespace RC::Unreal;
@@ -21,6 +29,20 @@ namespace openscumrcon
             // CDOs are named "Default__<ClassName>"; cheaper than a dedicated
             // flag check and matches the existing pattern in this codebase.
             return object->GetFullName().find(STR("Default__")) != RC::StringType::npos;
+        }
+
+        // Same standalone wide->narrow conversion as dllmain.cpp (duplicated
+        // rather than shared - see the comment there for why RC's own
+        // ensure_str_as/to_utf8_string failed to compile against
+        // UObject::GetFullName()'s return type in that translation unit;
+        // kept identical here rather than risking the same issue).
+        std::string narrow(const std::wstring& wide)
+        {
+            if (wide.empty()) return {};
+            const int size = WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), nullptr, 0, nullptr, nullptr);
+            std::string out(static_cast<std::size_t>(size), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, wide.data(), static_cast<int>(wide.size()), out.data(), size, nullptr, nullptr);
+            return out;
         }
     }
 
@@ -132,5 +154,85 @@ namespace openscumrcon
         // solved, report only whether the call itself completed.
         return "ok: dispatched via " + std::string(context_object->IsA(m_player_controller_class)
                 ? "PlayerController" : "GameInstance (fallback, known to not apply real effects)");
+    }
+
+    std::string AdminDispatch::dump_admin_command_permission_levels() const
+    {
+        // Diagnostic (2026-09-05): instead of hardcoding the +0x50/+0x51/+0x52
+        // byte offsets found via static disassembly (see
+        // docs/research/2026-09-05-authorization-gate-analysis.md), this
+        // walks each AdminCommand_* UClass's REFLECTED properties via
+        // UStruct's own TFieldRange<FProperty> and reads values through
+        // FProperty::ContainerPtrToValuePtr(). That resolves whatever the
+        // property's actual current offset is from the class metadata itself
+        // - portable across SCUM builds/servers, not tied to one binary's
+        // layout the way a hardcoded offset would be. If these fields turn
+        // out not to be UPROPERTY-reflected at all, this will simply find no
+        // matching property (logged below) rather than silently misreading
+        // memory - a raw-offset read was deliberately avoided here.
+        std::size_t objects_scanned = 0;
+        std::ostringstream log;
+
+        UObjectGlobals::ForEachUObject([&](UObject* object, ...) -> RC::LoopAction {
+            if (!object || object->IsUnreachable())
+            {
+                return RC::LoopAction::Continue;
+            }
+            // Class name convention confirmed during reflection scan
+            // (2026-09-04): "UAdminCommand_<Name>" per SCUM admin command,
+            // reflected name drops the "U" prefix -> "AdminCommand_<Name>".
+            if (object->GetFullName().find(STR("AdminCommand_")) == RC::StringType::npos)
+            {
+                return RC::LoopAction::Continue;
+            }
+            ++objects_scanned;
+
+            UClass* object_class = object->GetClassPrivate();
+            log << narrow(object->GetFullName()) << "\n";
+            if (!object_class)
+            {
+                log << "  <no UClass>\n";
+                return RC::LoopAction::Continue;
+            }
+
+            for (FProperty* property : TFieldRange<FProperty>(object_class))
+            {
+                if (!property)
+                {
+                    continue;
+                }
+                log << "  " << narrow(property->GetName())
+                    << " type=" << narrow(property->GetClass().GetName())
+                    << " offset=" << property->GetOffset_ForInternal()
+                    << " size=" << property->GetElementSize();
+
+                // Small integral-ish properties (bool/byte/enum, <=4 bytes) are
+                // the plausible candidates for the enabled/shipping/permission
+                // flags found in the disassembly - read and print their raw
+                // value through the property's own accessor, not a fixed offset.
+                if (property->GetElementSize() > 0 && property->GetElementSize() <= 4)
+                {
+                    const auto* value_ptr = property->ContainerPtrToValuePtr<std::uint8_t>(object);
+                    if (value_ptr)
+                    {
+                        log << " value=" << static_cast<int>(*value_ptr);
+                    }
+                }
+                log << "\n";
+            }
+            return RC::LoopAction::Continue;
+        });
+
+        std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_permission_levels.log", std::ios::trunc);
+        if (file.is_open())
+        {
+            file << log.str();
+        }
+
+        std::ostringstream summary;
+        summary << "ok: scanned " << objects_scanned
+                << " AdminCommand_* object(s), full property dump written to "
+                   "C:\\PowelsLocalBridge\\openscumrcon_permission_levels.log";
+        return summary.str();
     }
 }
