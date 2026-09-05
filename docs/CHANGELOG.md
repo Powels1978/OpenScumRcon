@@ -428,6 +428,68 @@ Ausdrücklich offen (nächster Schritt):
   direkt zu setzen/zu lesen, um die Hypothese zu verifizieren, bevor der
   aufwendigere AOB-Scan-Weg begonnen wird.
 
+## 2026-09-05 (Abend) — Durchbruch: eigenes Disassembly-Tool findet die echte Autorisierungskette
+
+Anlass: Nutzer-Vorschlag, ein eigenes Werkzeug zu bauen, das zeigt, wie SCUM (bzw.
+wie Herbie es nutzt) die Autorisierung tatsächlich prüft — nachdem reine
+Reflection-Beobachtung (siehe voriger Eintrag) an ihre Grenze gestoßen war.
+
+**Neues Werkzeug**: [`tools/pe_xref_scanner`](../tools/pe_xref_scanner) (`PeXrefScanner`) —
+ein eigenständiges, von `native_module` komplett unabhängiges Kommandozeilen-Tool
+(nur gegen `Zydis`, den in UE4SS' eigenem Build bereits vorhandenen x86/x64-
+Disassembler, gelinkt — kein Unreal/UE4SS-Code nötig). Arbeitsweise: **rein
+statische Analyse einer PE-Datei auf der Platte, kein Eingriff in einen laufenden
+Prozess** — parst die PE-Sektionstabelle selbst (Handrolled-Parser, keine
+Fremdbibliothek), findet bekannte String-Literale, rechnet ihre Datei-Offsets in
+virtuelle Adressen um, disassembliert die komplette Code-Sektion und meldet jede
+Instruktion, die per RIP-relativer Adressierung oder relativem Call/Jump auf eine
+dieser Adressen zeigt (Xref-Suche).
+
+**Deploy & Lauf**: Tool (477 KB) wie gewohnt per Base64 durch die schon bewährte
+PowerShell-Direct-Pipeline auf den Testserver gebracht, dort gegen die *laufende*
+`SCUMServer.exe`-Datei ausgeführt (Windows erlaubt gemeinsames Lesen einer
+laufenden .exe) — **kein Neustart, keinerlei Risiko für den Live-Server**, da nur
+Dateibytes gelesen wurden. Ergebnis: 22.132.011 Instruktionen aus 85 MB Code
+disassembliert, **20 Xrefs** zu den vier bekannten Status-Strings gefunden.
+
+**Kernfund**: Alle 20 Treffer liegen in einem einzigen ~860-Byte-Codeblock
+(`0x1418c7b60`–`0x1418c7fd0`) — eine zentrale Funktion (vermutlich
+`UAdminCommand::Execute()`/`::CanExecute()`), die alle vier Meldungen gemeinsam
+behandelt. Der Kontrollfluss ließ sich vollständig nachvollziehen:
+
+1. Erste, "stille" Prüfung über einen virtuellen Funktionsaufruf
+   (`vtable+0x278` auf der `UAdminCommand`-Instanz) — bei `false` bricht die
+   Funktion sofort ab, ganz ohne Meldung.
+2. Ein Cooldown-Zeitstempel-Vergleich (führt zu "Command is on cooldown...").
+3. **Der entscheidende Fund**: ein Aufruf von `0x141A45AA0(this=RBP, arg=RAX
+   [aus `0x141A4D050`], flagByte=[this_cmd+0x52], &this_cmd[0x28])` — bei
+   `false` wird `"Not authorized to execute command"` gesetzt. **Das ist mit
+   hoher Wahrscheinlichkeit die eigentliche Berechtigungsprüfung**, die
+   entscheidet, ob ein Aufruf durchgeht.
+4. Eine zweite, vorgelagerte Funktion (`0x1418c7e10`) prüft zwei benachbarte
+   Byte-Flags auf der Command-Instanz (`+0x50`/`+0x51`, vermutlich
+   `bEnabled`/`bDisabledInShippingBuild`) für die "Command is disabled..."-
+   Meldungen.
+
+Volle Analyse mit Adressen, Register-Bedeutungen und Tabelle der vermuteten
+Feld-Offsets: [`docs/research/2026-09-05-authorization-gate-analysis.md`](research/2026-09-05-authorization-gate-analysis.md).
+Rohes Disassembly aller 20 Fundstellen: [`docs/research/pexref_report_2026-09-05.txt`](research/pexref_report_2026-09-05.txt).
+
+**Rechtliche Einordnung**: Dies ist eine vollständig eigenständige statische
+Analyse der SCUM-Server-Binärdatei, die wir als Serverbetreiber legitim
+ausführen dürfen — kein Code oder Binary von `herbie96x/SCUM-RCON` oder
+`jasonuithol/SCUM-Mods` wurde untersucht, dekompiliert oder übernommen. Wir
+haben den Autorisierungsmechanismus komplett eigenständig gefunden.
+
+Ausdrücklich offen (nächster Schritt):
+
+- `0x141A45AA0` und `0x141A4D050` selbst disassemblieren (bisher nur die
+  Aufrufstellen gefunden, nicht die Zielfunktionen).
+- Klären, was das zweite Argument der Haupt-Funktion (`RDX`/`R15`) tatsächlich
+  ist — Arbeitshypothese: der "Executor" (vgl. `UAdminCommandExecutor`).
+- Danach: entweder einen validen Executor synthetisch erzeugen, der die Prüfung
+  besteht, oder `0x141A45AA0` selbst hooken.
+
 ## 2026-09-04, Nacht (Teil 3) — Versuch, Herbies Aufrufweg per Engine-Hook mitzuschneiden (ergebnislos, aber lehrreich)
 
 Anlass: Nutzer-Idee — statt nur zu vermuten, WIE Herbies Dispatch funktioniert, den

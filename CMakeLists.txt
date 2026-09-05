@@ -18,3 +18,4 @@ else()
 endif()
 
 add_subdirectory(native_module)
+add_subdirectory(tools/pe_xref_scanner)
