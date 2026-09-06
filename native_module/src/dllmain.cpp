@@ -1,5 +1,6 @@
 #include <atomic>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <memory>
 #include <sstream>
@@ -14,6 +15,7 @@
 #include <DynamicOutput/DynamicOutput.hpp>
 #include <Helpers/String.hpp>
 #include <Mod/CppUserModBase.hpp>
+#include <Unreal/Core/Containers/FString.hpp>
 #include <Unreal/Hooks/Hooks.hpp>
 #include <Unreal/UFunction.hpp>
 #include <Unreal/UObject.hpp>
@@ -141,6 +143,200 @@ namespace
         g_execute_detour = std::make_unique<PLH::x64Detour>(
                 targetAddress, reinterpret_cast<std::uint64_t>(&detour_execute), &g_execute_trampoline);
         return g_execute_detour->hook();
+    }
+
+    // Translates a static file VA (relative to the PE's preferred image base
+    // 0x140000000) to the actual runtime-loaded address, accounting for ASLR.
+    std::uint64_t resolve_runtime_address(std::uint64_t staticVa)
+    {
+        const auto moduleBase = reinterpret_cast<std::uint64_t>(GetModuleHandleW(nullptr));
+        return moduleBase + (staticVa - 0x140000000ULL);
+    }
+
+    // Diagnostic (2026-09-06): calls the thread-local-singleton "Get()"
+    // candidate (static VA 0x142685AE0 - see docs/research/
+    // 2026-09-06-native-entry-point-discovery.md) directly, from the game
+    // thread (same thread our own EngineTick-driven dispatch already runs
+    // on), and dumps the returned object's raw memory. This is a genuine,
+    // widely-used (99 call sites found statically) magic-static accessor -
+    // calling it with zero arguments is exactly what all 99 other call sites
+    // already do; the only new thing here is that WE are the caller instead
+    // of SCUM's own code. Read-only dump, no writes to the returned object.
+    std::string call_context_resolver_and_dump()
+    {
+        using GetContextFn = void*(*)();
+        const auto func = reinterpret_cast<GetContextFn>(resolve_runtime_address(0x142685AE0ULL));
+
+        void* result = func();
+
+        std::ostringstream out;
+        out << "ok: 0x142685AE0() returned " << result;
+
+        std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_context_dump.log", std::ios::trunc);
+        if (file.is_open())
+        {
+            file << "0x142685AE0() returned " << result << "\n";
+            if (result)
+            {
+                constexpr std::size_t kDumpBytes = 256;
+                const auto* bytes = static_cast<const unsigned char*>(result);
+                for (std::size_t i = 0; i < kDumpBytes; ++i)
+                {
+                    if (i % 16 == 0)
+                    {
+                        if (i != 0) file << "\n";
+                        file << "  +0x" << std::hex << i << std::dec << ": ";
+                    }
+                    file << std::hex << std::uppercase;
+                    file.width(2);
+                    file.fill('0');
+                    file << static_cast<int>(bytes[i]) << " ";
+                    file << std::dec << std::nouppercase;
+                }
+                file << "\n";
+            }
+        }
+        return out.str();
+    }
+
+    // Real end-to-end test (2026-09-06) of the native entry point found via
+    // stack-backtrace analysis (see docs/research/
+    // 2026-09-06-native-entry-point-discovery.md). RCX = the specific
+    // AdminCommand_* instance (verb selection already happened by picking
+    // this instance, matching the disassembly - no verb string needed in the
+    // args). RDX = a TArray<FString>-shaped header {Data, Num, Max} pointing
+    // at the command's arguments, matching what the disassembly reads at
+    // [rdi]/[rdi+8]. The callee resolves its own execution context
+    // internally (0x1418E8A10, already confirmed callable/safe) - we don't
+    // set that up ourselves.
+    struct FStringArrayHeader
+    {
+        RC::Unreal::FString* Data;
+        std::int32_t Num;
+        std::int32_t Max;
+    };
+
+    using AdminCommandEntryFn = bool(*)(void* thisPtr, FStringArrayHeader* args);
+
+    std::string try_native_setgodmode(const std::string& boolArg, const std::string& steamIdArg)
+    {
+        RC::Unreal::UObject* commandInstance = RC::Unreal::UObjectGlobals::StaticFindObject<RC::Unreal::UObject*>(
+                nullptr, nullptr, STR("/Script/SCUM.Default__AdminCommand_SetGodMode"));
+        if (!commandInstance)
+        {
+            return "error: AdminCommand_SetGodMode instance not found";
+        }
+
+        RC::Unreal::FString elements[2] = {
+                RC::Unreal::FString(RC::to_wstring(boolArg)),
+                RC::Unreal::FString(RC::to_wstring(steamIdArg)),
+        };
+        FStringArrayHeader argsHeader{elements, 2, 2};
+
+        const auto func = reinterpret_cast<AdminCommandEntryFn>(resolve_runtime_address(0x1419063d0ULL));
+
+        bool result = false;
+        std::string status = "ok";
+        try
+        {
+            result = func(commandInstance, &argsHeader);
+        }
+        catch (...)
+        {
+            status = "exception during native call";
+        }
+
+        std::ostringstream out;
+        out << status << ": native entry point returned " << (result ? "true" : "false");
+        return out.str();
+    }
+
+    // Diagnostic (2026-09-06): calls the executor-resolution helper
+    // (0x1418E8A10) directly with the AdminCommand_SetGodMode instance as
+    // argument - the exact same call 0x1419063d0 makes internally as its
+    // very first step - and dumps the result. Isolates whether the false
+    // from try_native_setgodmode() comes from executor resolution itself
+    // failing (null result here) or from a later check inside 0x1419063d0
+    // (non-null result here, meaning the problem is further down the
+    // chain). See docs/research/2026-09-06-native-entry-point-discovery.md.
+    using ExecutorResolveFn = void*(*)(void* thisPtr);
+
+    std::string call_executor_resolver_and_dump()
+    {
+        RC::Unreal::UObject* commandInstance = RC::Unreal::UObjectGlobals::StaticFindObject<RC::Unreal::UObject*>(
+                nullptr, nullptr, STR("/Script/SCUM.Default__AdminCommand_SetGodMode"));
+        if (!commandInstance)
+        {
+            return "error: AdminCommand_SetGodMode instance not found";
+        }
+
+        const auto func = reinterpret_cast<ExecutorResolveFn>(resolve_runtime_address(0x1418E8A10ULL));
+
+        void* result = nullptr;
+        std::string status = "ok";
+        try
+        {
+            result = func(commandInstance);
+        }
+        catch (...)
+        {
+            status = "exception during native call";
+        }
+
+        std::ostringstream out;
+        out << status << ": 0x1418E8A10(commandInstance=" << static_cast<void*>(commandInstance)
+            << ") returned " << result;
+
+        std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_executor_dump.log", std::ios::trunc);
+        if (file.is_open())
+        {
+            file << "0x1418E8A10(commandInstance=" << static_cast<void*>(commandInstance)
+                 << ") returned " << result << "\n";
+            if (result)
+            {
+                constexpr std::size_t kDumpBytes = 256;
+                const auto* bytes = static_cast<const unsigned char*>(result);
+                for (std::size_t i = 0; i < kDumpBytes; ++i)
+                {
+                    if (i % 16 == 0)
+                    {
+                        if (i != 0) file << "\n";
+                        file << "  +0x" << std::hex << i << std::dec << ": ";
+                    }
+                    file << std::hex << std::uppercase;
+                    file.width(2);
+                    file.fill('0');
+                    file << static_cast<int>(bytes[i]) << " ";
+                    file << std::dec << std::nouppercase;
+                }
+                file << "\n";
+            }
+        }
+        return out.str();
+    }
+
+    // Diagnostic (2026-09-06): the native call above returned false with no
+    // crash/exception - read-only check of WHERE that false likely
+    // originates. 0x1418E8A10 (the executor-resolution helper) bails
+    // immediately if this+0x20 is null, before even reaching the thread-
+    // singleton lookup. Reads the same bytes the game's own code already
+    // dereferences at that offset - see docs/research/
+    // 2026-09-06-native-entry-point-discovery.md.
+    std::string dump_setgodmode_field_0x20()
+    {
+        RC::Unreal::UObject* commandInstance = RC::Unreal::UObjectGlobals::StaticFindObject<RC::Unreal::UObject*>(
+                nullptr, nullptr, STR("/Script/SCUM.Default__AdminCommand_SetGodMode"));
+        if (!commandInstance)
+        {
+            return "error: AdminCommand_SetGodMode instance not found";
+        }
+        const auto* bytes = reinterpret_cast<const unsigned char*>(commandInstance);
+        void* fieldValue = nullptr;
+        std::memcpy(&fieldValue, bytes + 0x20, sizeof(fieldValue));
+
+        std::ostringstream out;
+        out << "ok: this=" << static_cast<void*>(commandInstance) << " this+0x20=" << fieldValue;
+        return out.str();
     }
 }
 
@@ -331,6 +527,32 @@ private:
                 {
                     g_capturing_native_calls.store(false, std::memory_order_relaxed);
                     response = "ok: native capture stopped";
+                }
+                else if (item.command_text == "!call_context_resolver")
+                {
+                    response = call_context_resolver_and_dump();
+                }
+                else if (item.command_text == "!call_executor_resolver")
+                {
+                    response = call_executor_resolver_and_dump();
+                }
+                else if (item.command_text == "!dump_setgodmode_field")
+                {
+                    response = dump_setgodmode_field_0x20();
+                }
+                else if (item.command_text.rfind("!try_native_setgodmode ", 0) == 0)
+                {
+                    // Usage: !try_native_setgodmode <true|false> <steamId>
+                    const std::string rest = item.command_text.substr(23);
+                    const auto space = rest.find(' ');
+                    if (space == std::string::npos)
+                    {
+                        response = "error: usage: !try_native_setgodmode <true|false> <steamId>";
+                    }
+                    else
+                    {
+                        response = try_native_setgodmode(rest.substr(0, space), rest.substr(space + 1));
+                    }
                 }
                 else
                 {

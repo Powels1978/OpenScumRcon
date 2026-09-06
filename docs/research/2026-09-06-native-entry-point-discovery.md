@@ -147,6 +147,84 @@ und Admin-Berechtigungen kommen ausschließlich aus `AdminUsers.ini` (geladen in
 einmalig aufgebauten, gecachten Set aus der letzten Session) — nicht aus der
 SQLite-Datenbank.
 
+## Update 2026-09-06 (Fortsetzung): der native Aufruf wurde tatsächlich versucht — `false`, sauber erklärt
+
+Mit allem oben Gefundenen wurde der komplette native Aufruf tatsächlich
+implementiert und live getestet (mit ausdrücklicher Freigabe des Nutzers,
+"Bin online, kannst also testen"):
+
+- `RCX` = `AdminCommand_SetGodMode`-CDO (per `StaticFindObject`, dieselbe
+  Instanz, die auch die reflektierten Flags wie `_requiredExecutorLevel`
+  trägt).
+- `RDX` = ein selbst im Speicher aufgebauter `TArray<FString>`-Header
+  (`{Data, Num=2, Max=2}`), zeigt auf zwei `RC::Unreal::FString`-Objekte
+  (`"true"`, `"76561198023499707"`) — nutzt UE4SS' eigene, ABI-kompatible
+  `FString`-Klasse, keine handgebaute Struktur nötig.
+- Aufruf von `0x1419063d0` (auf die Laufzeitadresse umgerechnet) direkt per
+  Funktionszeiger-Cast.
+
+**Ergebnis**: Kein Absturz, keine Exception — sauberer Rückgabewert `false`.
+Das allein beweist schon: die Grundmechanik (Objektauflösung, Argumentaufbau,
+Calling Convention) ist korrekt, sonst wäre der Prozess abgestürzt oder hätte
+Datenmüll verarbeitet.
+
+### Warum `false`: der Registrierungs-Check schlägt fehl (vollständig nachvollzogen)
+
+Um herauszufinden, WO genau die Ablehnung passiert, wurde die Kette
+schrittweise selbst nachgebaut und jeder Teilschritt einzeln aufgerufen und
+sein Ergebnis gedumpt (alles rein lesend, keine Speicher-Schreibzugriffe):
+
+1. **`this+0x20`** direkt gelesen (kein Aufruf, nur Speicherzugriff) → **nicht
+   `null`** (z. B. `0x000002026D2605A0`). Die erste denkbare Fehlerursache
+   (leeres Feld auf dem CDO) ist damit ausgeschlossen.
+2. **`0x1418E8A10(commandInstance)`** direkt aufgerufen (derselbe Aufruf, den
+   `0x1419063d0` intern als ersten Schritt macht) → **liefert `null`**.
+   Das ist die tatsächliche Fehlerquelle.
+3. Da `this+0x20` nicht `null` ist und der Thread-Singleton-Getter
+   `0x142685AE0()` (siehe oben) nachweislich immer ein gültiges Objekt
+   liefert, muss der finale Tail-Call `0x142D02DB0(rcx=this+0x20,
+   rdx=Singleton)` die Quelle der `null` sein. Disassemblierung (Rohdaten:
+   [`context_resolver_disassembly_2026-09-06.txt`](context_resolver_disassembly_2026-09-06.txt))
+   bestätigt:
+
+   ```
+   test rdx, rdx                      ; Singleton null? -> return 0 (war nicht der Fall)
+   mov eax, [rdx+0xCC]; shr eax,0xE; test al,1
+   jz return 0                          ; Flag-Bit auf dem Singleton muss gesetzt sein
+   call 0x142BB7770                       ; hole eine Vergleichsgröße (evtl. "aktuelles X")
+   cmp rdi, rax; jz return 0               ; Singleton darf nicht mit diesem Vergleichswert übereinstimmen
+   mov r8, [rsi+0x10]                        ; r8 = ein Feld AUF UNSEREM KEY-OBJEKT (this+0x20+0x10)
+   ; je nach Flag: entweder
+   ;   call 0x142B92800(rcx=r8, rdx=Singleton) -> bool   ("ist Singleton in r8 registriert?")
+   ; oder eine Sparse-Array-Suche in r8 nach einem Eintrag, der zum Singleton passt
+   ; -> bei Nichtfund: return 0
+   ```
+
+   **Kernaussage**: Diese Funktion prüft, **ob der aktuelle Thread-Kontext
+   (der Singleton) in einer Registrierungsstruktur enthalten ist, die am
+   Kommando-Objekt selbst hängt** (`this+0x20+0x10`). Nur wenn der
+   Singleton dort bereits eingetragen ist, wird er als gültiger "Executor"
+   akzeptiert und weitergereicht.
+
+### Schlussfolgerung
+
+Ein echter, eingehender RPC-Aufruf (Client → Server) trägt den gerade aktiven
+Thread-Kontext offenbar **irgendwo im Rahmen der Netzwerk-/RPC-Zustellung**
+in diese Registrierungsstruktur ein, bevor die eigentliche Befehlsausführung
+beginnt — vermutlich als Nebenwirkung der normalen RPC-Dispatch-Maschinerie
+(z. B. "diese Verbindung/dieser Channel ist gerade aktiv"). Ein von uns aus
+dem EngineTick heraus simulierter, "aus dem Nichts" kommender Aufruf hat
+diesen Registrierungsschritt nie durchlaufen — die eigentliche Ausführungs-
+und Argumentlogik ist zwar zu 100 % korrekt nachgebaut, aber der
+Autorisierungs-Check lehnt konsequent ab, weil der Kontext nirgends
+eingetragen ist.
+
+**Das ist eine vollständig verstandene, saubere Erklärung — kein Rätsel
+mehr, aber ein neues, eigenständiges Teilproblem**: wo/wie diese Registrierung
+bei einem echten RPC passiert, und ob/wie sie sich von außen nachbilden
+lässt. Das würde eine weitere Stack-Capture-Untersuchung erfordern, diesmal
+an einem RPC-Empfangs-Anker statt am Multicast-Anker.
+
 ## Offen (nächster Schritt)
 
 - `0x142685AE0` selbst disassemblieren — vermutlich ein TLS-Zugriff

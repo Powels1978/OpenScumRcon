@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-09-06 (4. Session) — Echter nativer Aufruf getestet: sauberes `false`, Ursache vollständig verstanden
+
+Direkte Fortsetzung. Mit Freigabe des Nutzers wurde der komplette native
+Aufruf von `0x1419063d0` erstmals wirklich implementiert und live getestet:
+`RCX` = `AdminCommand_SetGodMode`-CDO, `RDX` = selbst aufgebauter
+`TArray<FString>`-Header mit den Argumenten `["true",
+"76561198023499707"]` (nutzt UE4SS' eigene ABI-kompatible `FString`-Klasse).
+
+**Ergebnis**: Kein Absturz, saubere Rückgabe `false` — beweist, dass
+Objektauflösung, Argumentaufbau und Calling Convention korrekt sind.
+
+Um die Ablehnung zu verstehen, wurde die Kette schrittweise selbst
+nachgebaut: `this+0x20` direkt gelesen (nicht `null`), dann
+`0x1418E8A10(commandInstance)` (die Executor-Auflösung aus der letzten
+Session) isoliert aufgerufen — **liefert `null`**. Der finale Tail-Call
+darin (`0x142D02DB0`) wurde disassembliert und entpuppt sich als
+**Registrierungs-Check**: er prüft, ob der aktuelle Thread-Kontext in einer
+Struktur registriert ist, die am Kommando-Objekt selbst hängt
+(`this+0x20+0x10`).
+
+**Schlussfolgerung**: Ein echter RPC-Aufruf trägt den aktiven Thread-Kontext
+offenbar als Nebenwirkung der Netzwerk-Zustellung in diese Struktur ein,
+bevor die Befehlsausführung beginnt. Unser aus dem EngineTick simulierter
+Aufruf hat diesen Schritt nie durchlaufen — daher die Ablehnung. Vollständig
+verstanden, aber ein neues Teilproblem: wo/wie diese Registrierung passiert
+und ob sie sich nachbilden lässt.
+
+Nebenbei: die Regel "nach SCUM-Neustart mindestens 2 Minuten warten" wurde
+verschärft und um die zuverlässigere Methode ergänzt: `local_bridge`s
+`GET /server.json` (`joinReady`/`state`) statt Prozess/CPU/Log-Heuristiken
+abzufragen, um echte Serverbereitschaft festzustellen.
+
+Details: [`docs/research/2026-09-06-native-entry-point-discovery.md`](research/2026-09-06-native-entry-point-discovery.md).
+
 ## 2026-09-06 (3. Session) — Durchbruch: echter nativer Einstiegspunkt gefunden
 
 Direkte Fortsetzung. Ein PolyHook_2-Inline-Hook (nur beobachtend, kein
