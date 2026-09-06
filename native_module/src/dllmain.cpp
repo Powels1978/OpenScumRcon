@@ -153,6 +153,89 @@ namespace
         return moduleBase + (staticVa - 0x140000000ULL);
     }
 
+    // Bypass hook for the registration-check tail-call (2026-09-06) - see
+    // docs/research/2026-09-06-native-entry-point-discovery.md, "der native
+    // Aufruf wurde tatsächlich versucht". A real, genuine incoming RPC
+    // registers the currently-active thread context into a structure hanging
+    // off the command object (this+0x20+0x10) as a side effect of network
+    // delivery, before this check runs; our own out-of-band call from the
+    // EngineTick never goes through that delivery path, so the check always
+    // finds nothing registered and fails closed.
+    //
+    // This module already IS the trust boundary for admin commands - callers
+    // must authenticate with the RCON password before any command reaches
+    // this point at all (see rcon_server.cpp). SCUM's own internal check here
+    // is answering a question ("is there a legitimate live RPC context for
+    // this call") that is already answered by that authentication for the
+    // brief moment we're inside our own dispatch. So rather than fabricate a
+    // fake executor object or otherwise touch other memory, this hook
+    // narrowly overrides just this one check's result, and ONLY while
+    // g_bypass_registration_check is set (set/cleared immediately around our
+    // own call in try_native_setgodmode() - see below). Any other caller of
+    // this same function elsewhere in the game (unrelated systems reusing
+    // this generic lookup) is completely unaffected, since the flag is false
+    // the rest of the time.
+    constexpr std::uint64_t kRegistrationCheckStaticVa = 0x142D02DB0ULL;
+
+    using RegistrationCheckFn = void*(*)(void* key, void* singleton);
+
+    std::unique_ptr<PLH::x64Detour> g_registration_check_detour;
+    std::uint64_t g_registration_check_trampoline = 0;
+    std::atomic<bool> g_bypass_registration_check{false};
+
+    // Read-only observation mode (2026-09-06), separate from the bypass
+    // above: logs (key, singleton, result) for every REAL call to this
+    // function - i.e. while playing normally, including when a genuine
+    // admin types a command in chat. Never changes the return value. Goal:
+    // compare what a genuinely successful call looks like (real player, or
+    // Herbie's own working RCON) against our own failing synthetic call, to
+    // find out what's actually different. Manual on/off via
+    // !capture_registration_start/!capture_registration_stop, same pattern
+    // as the other capture hooks in this file.
+    std::atomic<bool> g_capturing_registration_calls{false};
+
+    void* detour_registration_check(void* key, void* singleton)
+    {
+        if (g_bypass_registration_check.load(std::memory_order_relaxed))
+        {
+            // Corrected 2026-09-06 after a live crash: the disassembly shows
+            // TWO different "found" return shapes (a simple "return key"
+            // fast path, and a sparse-array lookup path that returns
+            // "key + offset-from-the-found-entry"). The first attempt
+            // assumed the simple shape and crashed the server. Observing a
+            // REAL, successful admin-command call (via the read-only
+            // observation mode below, comparing a genuine player-typed
+            // #SetGodMode against the rare/matching key) showed the actual
+            // relationship: result == key + 0x580 exactly, every time (3/3
+            // observed real calls, including a second unrelated admin
+            // command sharing the same key). This bypass now reproduces
+            // that exact, empirically-confirmed shape instead of guessing.
+            return static_cast<char*>(key) + 0x580;
+        }
+
+        void* result = reinterpret_cast<RegistrationCheckFn>(g_registration_check_trampoline)(key, singleton);
+
+        if (g_capturing_registration_calls.load(std::memory_order_relaxed))
+        {
+            std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_registration_calls.log", std::ios::app);
+            if (file.is_open())
+            {
+                file << "key=" << key << " singleton=" << singleton << " result=" << result << "\n";
+            }
+        }
+
+        return result;
+    }
+
+    bool install_registration_check_hook()
+    {
+        const auto targetAddress = resolve_runtime_address(kRegistrationCheckStaticVa);
+        g_registration_check_detour = std::make_unique<PLH::x64Detour>(
+                targetAddress, reinterpret_cast<std::uint64_t>(&detour_registration_check),
+                &g_registration_check_trampoline);
+        return g_registration_check_detour->hook();
+    }
+
     // Diagnostic (2026-09-06): calls the thread-local-singleton "Get()"
     // candidate (static VA 0x142685AE0 - see docs/research/
     // 2026-09-06-native-entry-point-discovery.md) directly, from the game
@@ -235,6 +318,16 @@ namespace
 
         const auto func = reinterpret_cast<AdminCommandEntryFn>(resolve_runtime_address(0x1419063d0ULL));
 
+        // Bypass DISABLED (2026-09-06) after TWO live crashes with two
+        // different guessed return shapes (plain "return key", then the
+        // empirically-observed "return key+0x580") - both crashed the
+        // server. Whatever this function's real "found" return value points
+        // to clearly carries more meaning than a bare address; fabricating
+        // it without fully understanding the pointed-to structure is not
+        // safe. g_bypass_registration_check intentionally left false here -
+        // this call now only exercises the plain, unmodified native path
+        // (same as the very first attempt, which returned a clean `false`
+        // with no crash).
         bool result = false;
         std::string status = "ok";
         try
@@ -454,7 +547,16 @@ public:
                     STR("[OpenScumRconNative] Native execute() hook FAILED to install - "
                         "!native_capture_start/!dump_native_hook will not work, RCON listener unaffected\n"));
         }
-
+        if (install_registration_check_hook())
+        {
+            RC::Output::send<RC::LogLevel::Verbose>(STR("[OpenScumRconNative] Registration-check hook installed\n"));
+        }
+        else
+        {
+            RC::Output::send<RC::LogLevel::Error>(
+                    STR("[OpenScumRconNative] Registration-check hook FAILED to install - "
+                        "!try_native_setgodmode will not work, RCON listener unaffected\n"));
+        }
         if (!m_rcon_server.start(config.bind_host, config.port, config.password, m_queue))
         {
             RC::Output::send<RC::LogLevel::Error>(STR("[OpenScumRconNative] RconServer failed to start\n"));
@@ -531,6 +633,17 @@ private:
                 else if (item.command_text == "!call_context_resolver")
                 {
                     response = call_context_resolver_and_dump();
+                }
+                else if (item.command_text == "!capture_registration_start")
+                {
+                    std::ofstream("C:\\PowelsLocalBridge\\openscumrcon_registration_calls.log", std::ios::trunc);
+                    g_capturing_registration_calls.store(true, std::memory_order_relaxed);
+                    response = "ok: registration capture started";
+                }
+                else if (item.command_text == "!capture_registration_stop")
+                {
+                    g_capturing_registration_calls.store(false, std::memory_order_relaxed);
+                    response = "ok: registration capture stopped";
                 }
                 else if (item.command_text == "!call_executor_resolver")
                 {

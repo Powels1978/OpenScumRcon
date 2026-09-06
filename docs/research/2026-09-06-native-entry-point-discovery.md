@@ -225,6 +225,81 @@ bei einem echten RPC passiert, und ob/wie sie sich von außen nachbilden
 lässt. Das würde eine weitere Stack-Capture-Untersuchung erfordern, diesmal
 an einem RPC-Empfangs-Anker statt am Multicast-Anker.
 
+## Update 2026-09-06 (Fortsetzung 2): Bypass-Versuche — zwei Abstürze, wichtige Negativ-Erkenntnisse
+
+Nach dem sauberen `false`-Ergebnis wurde versucht, den Registrierungs-Check
+(`0x142D02DB0`) gezielt und nur während des eigenen, per RCON-Passwort
+authentifizierten Aufrufs zu umgehen (PolyHook_2-Detour, aktiv nur für die
+kurze Dauer des eigenen Aufrufs, sonst im ganzen Spiel wirkungslos).
+
+### Versuch 1: `return key` — Absturz
+
+Erste Annahme (Pfad A aus der Disassemblierung: `mov rax, rsi; ret`, das
+Ergebnis ist der Schlüssel selbst unverändert). **Ergebnis: Server-Absturz**
+(Prozess verschwand komplett, per automatischem Neustart-Mechanismus wieder
+hochgekommen).
+
+### Ursachenanalyse per Beobachtung eines ECHTEN, erfolgreichen Aufrufs
+
+Statt weiter zu raten, wurde der bereits vorhandene Hook auf
+`0x142D02DB0` um einen reinen Beobachtungsmodus erweitert (loggt `key`,
+`singleton`, `result` bei jedem echten Aufruf, ändert nichts). Herausforderung:
+diese Funktion wird auch von völlig unabhängigem, generischem Spielcode extrem
+häufig aufgerufen (120.511 Aufrufe in einem kurzen Fenster, 336 unterschiedliche
+`key`-Werte) — admin-befehl-spezifische Aufrufe mussten aus diesem Rauschen
+herausgefiltert werden.
+
+**Vorgehen**: Aufzeichnung während der Nutzer selbst `#SetGodMode true` im
+Spielchat eingab (ein garantiert echter, erfolgreicher Aufruf — GodMode war
+danach bestätigt aktiv). Anschließend wurden die aufgezeichneten `key`-Werte
+nach Häufigkeit sortiert; der seltenste (`count=3`, nächsthäufigerer bereits
+`count=16`) war ein klarer Ausreißer und passte inhaltlich (1× von der
+JoinCommands-Automatisierung, 2× vom eigenen Testbefehl — beide nutzen
+vermutlich denselben, geteilten `this+0x20`-Wert, kein pro-Befehl-eindeutiger
+Schlüssel).
+
+Alle drei Zeilen zu diesem Schlüssel zeigten identisch:
+```
+key=000001C4DB0F40C0 singleton=000001C33F18C580 result=000001C4DB0F4640
+```
+`result - key = 0x580` exakt — ein sauberer, fester Offset. Das entspricht
+**Pfad B** aus der ursprünglichen Disassemblierung (die Sparse-Array-Suche,
+die einen aus dem gefundenen Eintrag abgeleiteten Zeiger zurückgibt), nicht
+Pfad A.
+
+### Versuch 2: `return key + 0x580` — erneuter Absturz
+
+Mit dieser empirisch belegten Korrektur wurde der Bypass erneut versucht.
+**Ergebnis: wieder Server-Absturz.**
+
+### Schlussfolgerung: Bypass-Ansatz aufgegeben
+
+Zwei Abstürze mit zwei unterschiedlichen, jeweils plausibel begründeten
+Rückgabewerten zeigen: **der zurückgegebene Zeiger wird von nachfolgendem
+Code nicht nur als Adresse behandelt, sondern es werden vermutlich weitere
+Felder AUS dem referenzierten Speicher gelesen** — die bloße Adresse korrekt
+zu treffen reicht nicht, wenn der Inhalt dahinter nicht dem entspricht, was
+ein echter, durch die vorausgehende (übersprungene) Registrierung
+initialisierter Eintrag enthalten würde. Ein synthetischer Zeiger auf
+irrelevanten/uninitialisierten Speicher an einer numerisch richtigen Adresse
+ist nicht sicher.
+
+**Der Registrierungs-Check-Bypass wurde daher vollständig deaktiviert**
+(`g_bypass_registration_check` wird in `try_native_setgodmode()` nicht mehr
+gesetzt — der Aufruf läuft nur noch unverändert nativ durch, liefert sauber
+`false`, kein Crash-Risiko mehr). Der reine Beobachtungsmodus (Logging ohne
+Verhaltensänderung) bleibt bestehen und ist sicher.
+
+**Für zukünftige Sessions wichtig**: Ein numerisch korrekt aussehender
+Rückgabewert ist nicht ausreichend, um einen internen Engine-Check sicher zu
+fälschen, wenn die Bedeutung/Struktur des referenzierten Speichers nicht
+vollständig verstanden ist. Der nächste sinnvolle Schritt wäre, den
+**Inhalt** des echten, während eines erfolgreichen Aufrufs zurückgegebenen
+Objekts (`key+0x580`, in diesem Fall `000001C4DB0F4640`) selbst zu dumpen
+(analog zu `call_context_resolver_and_dump()`), um zu verstehen, was dort
+wirklich stehen muss, bevor ein weiterer Bypass-Versuch überhaupt in Betracht
+gezogen wird.
+
 ## Offen (nächster Schritt)
 
 - `0x142685AE0` selbst disassemblieren — vermutlich ein TLS-Zugriff

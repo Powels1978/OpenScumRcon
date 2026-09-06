@@ -1,5 +1,36 @@
 # Changelog
 
+## 2026-09-06 (5. Session) — Bypass-Versuche: zwei Server-Abstürze, Bypass deaktiviert
+
+Direkte Fortsetzung. Versucht, den Registrierungs-Check (`0x142D02DB0`)
+gezielt nur während des eigenen, per RCON-Passwort authentifizierten Aufrufs
+zu umgehen (PolyHook_2-Detour). **Zwei Versuche, zwei Server-Abstürze:**
+
+1. `return key` (Annahme: einfacher "gefunden"-Pfad aus der Disassemblierung)
+   → Absturz.
+2. Zur Fehlersuche wurde der Hook um einen reinen Beobachtungsmodus erweitert
+   und während eines ECHTEN, vom Nutzer selbst im Chat eingegebenen
+   `#SetGodMode true` mitgeschnitten. Aus 120.511 aufgezeichneten Aufrufen
+   (diese Funktion wird auch von unabhängigem generischem Spielcode extrem
+   häufig genutzt) wurde per Seltenheits-Analyse der richtige Schlüssel
+   isoliert: `result - key = 0x580` exakt, bei allen 3 beobachteten echten
+   Aufrufen identisch. `return key + 0x580` (empirisch belegt) → **erneuter
+   Absturz.**
+
+**Schlussfolgerung**: Der zurückgegebene Zeiger wird offenbar nicht nur als
+Adresse verwendet, sondern nachfolgender Code liest vermutlich weitere Felder
+aus dem referenzierten Speicher — eine numerisch korrekte Adresse ohne
+passenden Inhalt dahinter ist nicht sicher zu fälschen. Der Bypass wurde
+**vollständig deaktiviert** (nur noch reine, verhaltensneutrale Beobachtung
+bleibt aktiv). Der native Aufruf selbst läuft weiterhin unverändert und
+sauber mit `false` durch, kein Crash-Risiko mehr.
+
+Nebenbei: `local_bridge`s `GET /server.json` erneut als zuverlässiger
+Bereitschafts-Check genutzt, um nach jedem der beiden Neustarts (automatischer
+Wiederanlauf nach Absturz) sicher weiterzumachen.
+
+Details: [`docs/research/2026-09-06-native-entry-point-discovery.md`](research/2026-09-06-native-entry-point-discovery.md).
+
 ## 2026-09-06 (4. Session) — Echter nativer Aufruf getestet: sauberes `false`, Ursache vollständig verstanden
 
 Direkte Fortsetzung. Mit Freigabe des Nutzers wurde der komplette native
