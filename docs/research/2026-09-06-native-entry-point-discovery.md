@@ -1,0 +1,168 @@
+# Durchbruch: der echte native Einstiegspunkt für Admin-Befehle — 2026-09-06
+
+Fortsetzung von [`2026-09-05-authorization-gate-analysis.md`](2026-09-05-authorization-gate-analysis.md).
+Dort wurde gezeigt: (a) `Test_ProcessAdminCommand` ist eine leere Shipping-Stub-Funktion,
+(b) `PlayerRpcChannel::Chat_Server_ProcessAdminCommand` läuft fehlerfrei, aber wirkungslos,
+und (c) ein ProcessEvent-Capture während eines echten, über Herbies RCON ausgelösten
+`SetGodMode`-Aufrufs zeigte: **kein einziger reflektierter Funktionsaufruf** ist beteiligt.
+Herbie triggert den Befehl nachweislich rein nativ.
+
+## Methode: erst Inline-Hook (Sackgasse), dann Stack-Capture an einem sicheren Anker (Erfolg)
+
+### Versuch 1: PolyHook_2-Inline-Hook auf die alte Autorisierungsfunktion — negativ, aber beweiskräftig
+
+Die ursprünglich gefundene Autorisierungsfunktion (`0x1418c7b60`, siehe voriges Dokument)
+hatte laut statischer Analyse **null** Xrefs jeglicher Art (Call/Jmp/Lea/absolute
+Immediate/rohe Zeiger). Um das empirisch zu klären, wurde ein echter Inline-Hook
+(PolyHook_2 `x64Detour`, bereits von UE4SS selbst vendored) direkt auf die
+Instruktionsebene dieser Funktion gesetzt — er ändert nichts am Verhalten (ruft
+immer die Original-Funktion über die Trampoline auf), loggt nur bei Treffer.
+
+**Ergebnis**: Der Hook installierte erfolgreich, wurde aber bei einem echten,
+erfolgreichen `SetGodMode`-Aufruf über Herbies RCON **kein einziges Mal ausgelöst**.
+Ein Instruktions-Hook feuert bei *jeder* Art von Kontrollfluss-Übergabe, egal wie
+indirekt — das beweist empirisch (nicht nur durch fehlende Xrefs vermutet): **diese
+Funktion ist im aktuell laufenden Code komplett tot/unerreichbar.**
+
+### Versuch 2: Stack-Backtrace an einem garantiert lebendigen Anker — Erfolg
+
+Aus der allerersten ProcessEvent-Capture-Session war bereits bekannt: die reflektierte
+Multicast-RPC `Prisoner:NetMulticast_UpdateAdminStates` feuert garantiert bei jeder
+echten Admin-Zustandsänderung (sie repliziert den bereits geänderten Zustand an
+Clients). Statt weiter von einer Vermutung aus vorwärts zu raten, wurde diese Funktion
+als **Anker** genutzt: im bereits vorhandenen, kostengünstigen ProcessEvent-Pre-Hook
+wurde ein einfacher Zeigervergleich ergänzt (`function == m_admin_states_multicast_function`,
+kein String-Vergleich auf dem heißen Pfad), der bei Treffer `CaptureStackBackTrace`
+(Standard-Windows-API, nutzt die `.pdata`-Unwind-Metadaten, funktioniert zuverlässig
+auch ohne Frame-Pointer in Shipping-Builds) aufruft und alle Rücksprungadressen plus
+das zugehörige Modul loggt.
+
+Ablauf: `!native_capture_start`-Sentinel *(hier nicht mehr nötig — der Anker ist
+immer aktiv, da er nur ein billiger Zeigervergleich ist)*, `SetGodMode true <steamId>`
+über Herbies RCON ausgelöst, Log geholt.
+
+## Kernfund: Herbies Mod im Call-Stack
+
+Rohdaten: [`capture_log_setgodmode_via_herbie_2026-09-06_filtered.txt`](capture_log_setgodmode_via_herbie_2026-09-06_filtered.txt)
+(vorheriger negativer Test) und die neue Stack-Capture zeigt (Module pro Frame):
+
+```
+[0-1]   OpenScumRconNative (main.dll)      - unser eigener Hook
+[2-3]   UE4SS.dll                          - Engine-ProcessEvent-Hook-Dispatch
+[4-7]   SCUMServer.exe                     - <-- generischer Ausführungs-/Antwortpfad
+[8-12]  scum_rcon\dlls\main.dll            - HERBIES MOD, direkt im Call-Stack!
+[13-14] UE4SS.dll
+[15-20] SCUMServer.exe                     - EngineTick o.ae., ruft scum_rcon's Tick-Callback
+[21]    KERNEL32.DLL
+[22]    ntdll.dll
+```
+
+Wichtig: es wurde zu keinem Zeitpunkt Code aus `scum_rcon\dlls\main.dll` gelesen oder
+disassembliert — nur die Modulzugehörigkeit einzelner Rücksprungadressen im Stack
+wurde bestimmt (`GetModuleHandleExW` mit `FLAG_FROM_ADDRESS`). Das verletzt nicht die
+Projektregel, Herbies Code nicht zu untersuchen; analysiert wurde ausschließlich
+SCUMs eigener, lizenziert lauffähiger Code.
+
+Frame 7 (der unmittelbare Aufrufer von `scum_rcon.dll`, also **der native
+Einstiegspunkt, den Herbies Mod direkt anspringt**) wurde in zwei Aufrufen beobachtet:
+`0x141906466` und `0x1418e65e9` (Laufzeitadressen, auf die statische Datei-VA
+zurückgerechnet über die bekannte Prozess-Basisadresse). Rohdaten der Disassemblierung:
+[`herbie_entry_disassembly_2026-09-06.txt`](herbie_entry_disassembly_2026-09-06.txt).
+
+## Der echte Einstiegspunkt: `0x1419063d0`
+
+Beide beobachteten Rücksprungadressen liegen mitten in derselben Funktion, deren
+Anfang bei `0x1419063d0` liegt (Prolog: `mov [rsp+8],rbx; mov [rsp+0x10],rsi; push
+rdi; sub rsp,0x30` — klassisches MSVC-Muster). Rekonstruierte Signatur:
+`func(RCX=this /* vermutlich die AdminCommand_*-Instanz */, RDX=args /* TArray-artige
+Struktur, [RDX]=Datenzeiger, [RDX+8]=Anzahl */) -> bool`.
+
+Ablauf:
+
+1. `call 0x1418E8A10(this)` → liefert ein Objekt (näheres siehe unten) oder `null`
+   bei Fehlschlag → sofortiger Abbruch.
+2. Virtueller Aufruf `[r8+0x20]` auf diesem Objekt → `rbx` (weiterer abgeleiteter
+   Kontext).
+3. `call 0x1427E0D80`, dann ein **Bounds-/Registrierungscheck**: `rbx`'s Wert wird
+   gegen ein Array (`[rcx+0x38]` Länge, `[rcx+0x30]` Daten) verglichen — sehr
+   ähnlich der "ist registriert"-Prüfung aus der alten (toten) Analyse, hier aber
+   im tatsächlich aktiven Pfad.
+4. `call 0x1421E8100(rbx)` → bool. **Korrektur einer Zwischenvermutung**: das ist
+   **keine** Berechtigungsprüfung, sondern eine **Positions-/Zonen-Prüfung** (Grid-
+   Zellen-Lookup über Weltkoordinaten, `movups`/`shufps` auf einen Vektor bei
+   `[rbx+0x1D0]`) — vermutlich "ist der Aufrufer/das Ziel in einer bestimmten Zone",
+   nicht "ist Admin".
+5. Falls `[rdi+8] > 0` (also mindestens ein Argument vorhanden): `call
+   0x1418ECF90(rdi[0], &local)` — liest vermutlich das erste Argument aus.
+6. `call 0x142203000(rbx)` — Rücksprungadresse davon ist genau `0x141906466`, die
+   von uns beobachtete Adresse.
+7. `call 0x1421E8100(rbx)` erneut, dann Aufbau einer formatierten Nachricht
+   (`call 0x1429B88B0`, FString-artige Konstruktion mit zwei Literal-Adressen als
+   Format-/Fallback-Text).
+8. **Virtueller Aufruf `[rsi-Vtable][+0x290]`** mit der gebauten Nachricht als
+   Argument — das ist mit hoher Wahrscheinlichkeit **"sende die Ergebnis-Antwort"**
+   (das fehlende Puzzlestück aus allen früheren Sessions: wie Herbies RCON die
+   Antworttext-Meldung wie `"God mode set to true."` bekommt).
+9. Cleanup, `return true`.
+
+## Die Executor-Auflösung: `0x1418E8A10` — impliziter, nicht übergebener Kontext
+
+```
+push rbx
+mov rbx, [rcx+0x20]        ; this->field_0x20
+test rbx, rbx
+jz  -> return 0
+call 0x142685AE0             ; KEIN sichtbares Argument!
+mov rdx, rax
+mov rcx, rbx
+jmp 0x142D02DB0              ; Tail-Call: eigentliches Ergebnis kommt von hier
+```
+
+**Das ist der wichtigste Einzelfund dieser Session**: `0x142685AE0` wird **ohne jedes
+Argument** aufgerufen — das ist praktisch ein sicheres Zeichen für einen Zugriff auf
+**Thread-lokalen oder globalen Zustand** ("der aktuell laufende Ausführungskontext"),
+nicht auf einen übergebenen Parameter. Das erklärt endgültig und schlüssig, warum
+*jeder* bisherige Versuch dieser und der vorigen Session (egal über welche Funktion,
+egal mit welchem `WorldContextObject`) wirkungslos blieb: **wir haben nie diesen
+impliziten Kontext gesetzt**, weil wir nicht wussten, dass er existiert. Es ging nie
+darum, das richtige Objekt als Argument zu finden — der native Code erwartet den
+Aufrufkontext an einer ganz anderen Stelle.
+
+## Nebenbefund: `scum.db`/`scum.db-wal` enthalten weder GodMode- noch Admin-Status
+
+Auf Nutzerwunsch wurde die laufende `SCUM.db` (+ `-wal`/`-shm`, per Shared-Read
+kopiert, keine Unterbrechung des Serverbetriebs) heruntergeladen und lokal mit
+Pythons `sqlite3` durchsucht:
+
+- Tabelle `elevated_users` existiert, ist aber **komplett leer** (0 Zeilen).
+- Systematische Suche über **alle** Tabellen/Spalten nach "god"/"immortal"/
+  "admin"/"elevated" (Groß-/Kleinschreibung ignoriert): **keine einzige Spalte**
+  irgendwo in der Datenbank.
+- `user`/`user_profile` enthalten normale Kontodaten (SteamID, Name, `prisoner_id`),
+  aber keinerlei Berechtigungs- oder GodMode-Flag.
+
+**Schlussfolgerung**: GodMode/Immortality sind reine Laufzeit-Flags im Prozessspeicher
+(bestätigt durch die bereits bekannte Beobachtung "Rejoin ist GodMode immer weg"),
+und Admin-Berechtigungen kommen ausschließlich aus `AdminUsers.ini` (geladen in den
+einmalig aufgebauten, gecachten Set aus der letzten Session) — nicht aus der
+SQLite-Datenbank.
+
+## Offen (nächster Schritt)
+
+- `0x142685AE0` selbst disassemblieren — vermutlich ein TLS-Zugriff
+  (`__declspec(thread)`-Variable oder Windows-`TlsGetValue`) oder ein Zugriff auf
+  eine globale "current RPC context"-Variable. Das ist der letzte fehlende Baustein,
+  um zu verstehen, WIE und WANN dieser Kontext gesetzt wird — und ob/wie wir ihn
+  selbst setzen könnten, bevor wir `0x1419063d0` aufrufen.
+- `0x142D02DB0` (der Tail-Call-Ziel von `0x1418E8A10`) disassemblieren, um die
+  tatsächliche Rückgabe-Semantik zu verstehen.
+- Klären, was der zweite Parameter (`RDX`, das TArray-artige Argument) genau für
+  eine Struktur ist — vermutlich `TArray<FString>` der geparsten Befehlsargumente
+  (nicht der rohe Befehlsstring) — d. h. Herbies Mod parst `"SetGodMode true
+  <steamId>"` vermutlich VOR diesem Aufruf in Verb + Argumentliste und löst die
+  passende `AdminCommand_*`-Instanz (das `RCX`-Argument) bereits selbst über die
+  Registry auf.
+- Erst danach: einen sicheren nativen Aufruf dieser Kette aus dem eigenen Modul
+  heraus implementieren (Funktionszeiger-Cast, korrekte Calling Convention,
+  korrekt aufgebaute Argumente) — das ist ein eigener, nicht trivialer
+  Implementierungsschritt, sobald der Kontext-Mechanismus verstanden ist.

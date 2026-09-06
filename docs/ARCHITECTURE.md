@@ -103,6 +103,15 @@ als Sackgasse einzustufen — der native Aufrufweg über
 Kandidat. Details:
 [`docs/research/2026-09-05-authorization-gate-analysis.md`](research/2026-09-05-authorization-gate-analysis.md).
 
+**Update 2026-09-06 (3. Session)**: Per Stack-Backtrace an einem garantiert
+lebendigen Anker (`Prisoner:NetMulticast_UpdateAdminStates`) wurde der echte
+native Einstiegspunkt gefunden, den Herbies Mod direkt aufruft (`0x1419063d0`).
+Die Executor-Auflösung darin greift auf einen impliziten, wahrscheinlich
+Thread-lokalen Ausführungskontext zu, nicht auf ein übergebenes Argument —
+das erklärt endgültig, warum alle vorherigen Aufrufversuche wirkungslos
+blieben. Details:
+[`docs/research/2026-09-06-native-entry-point-discovery.md`](research/2026-09-06-native-entry-point-discovery.md).
+
 Ein Live-Reflection-Dump (UE4SS' `DumpAllObjects()`, ausgeführt auf einem Testserver mit
 0 Spielern online, nach expliziter Freigabe — siehe `docs/CHANGELOG.md`) hat den
 tatsächlichen Aufrufpunkt gefunden:

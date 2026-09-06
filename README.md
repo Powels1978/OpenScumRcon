@@ -24,9 +24,11 @@ ruled out: `Test_ProcessAdminCommand` (confirmed via disassembly to be an
 empty stub in the Shipping build) and `PlayerRpcChannel::Chat_Server_ProcessAdminCommand`
 (runs without error but has no effect — confirmed by capturing every function
 call during a real, working admin command triggered via the still-functional
-Herbie RCON: it uses no reflected function at all). Current focus: calling
-the native `AdminCommandRegistry`/`AdminCommandExecutor` machinery directly
-(not through Unreal's reflection system). See
+Herbie RCON: it uses no reflected function at all). A stack-backtrace capture
+at a guaranteed-live anchor then found the actual native entry point Herbie's
+own mod calls directly. Current focus: understanding an implicit, likely
+thread-local execution context that entry point depends on, so it can be
+called safely from this project's own native module. See
 [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for the full, warts-and-all
 investigation history and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for
 the technical approach.
@@ -89,8 +91,11 @@ Shipping-Build entlarvt) und `PlayerRpcChannel::Chat_Server_ProcessAdminCommand`
 (läuft fehlerfrei, aber wirkungslos — bestätigt durch Mitschneiden aller
 Funktionsaufrufe während eines echten, über Herbies noch funktionierendes
 RCON ausgelösten Admin-Befehls: der nutzt gar keine reflektierte Funktion).
-Aktueller Fokus: die native `AdminCommandRegistry`/`AdminCommandExecutor`-
-Maschinerie direkt aufrufen, nicht über Unreals Reflection-System. Die volle,
+Ein Stack-Backtrace an einem garantiert lebendigen Anker fand danach den
+echten nativen Einstiegspunkt, den Herbies eigenes Mod direkt aufruft.
+Aktueller Fokus: einen impliziten, wahrscheinlich Thread-lokalen
+Ausführungskontext verstehen, von dem dieser Einstiegspunkt abhängt, um ihn
+sicher aus dem eigenen nativen Modul heraus aufrufen zu können. Die volle,
 ungeschönte Untersuchungshistorie steht in
 [`docs/CHANGELOG.md`](docs/CHANGELOG.md), die technische Umsetzung in
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).

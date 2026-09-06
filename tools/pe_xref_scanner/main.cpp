@@ -303,6 +303,29 @@ int main(int argc, char** argv)
         }
     }
 
+    // Optional: also search for xrefs to already-known FUNCTION addresses
+    // (not just strings) - follow-up once a function itself is known and we
+    // need to find its CALLERS (e.g. the still-unknown native entry point
+    // that calls the authorization-gate function). Usage:
+    // PeXrefScanner <exe> <out.txt> xref:0x1418c7b60 ...
+    // Exact-match only (no +64 tolerance like the string search below uses).
+    std::vector<StringHit> exactHits;
+    for (int i = 3; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg.rfind("xref:", 0) != 0) continue;
+        try
+        {
+            const std::uint64_t va = std::stoull(arg.substr(5), nullptr, 16);
+            exactHits.push_back({arg.substr(5), "FUNC", va});
+            std::cerr << "Also searching for xrefs to function VA 0x" << std::hex << va << std::dec << "\n";
+        }
+        catch (const std::exception& ex)
+        {
+            std::cerr << "Bad xref: argument '" << arg << "': " << ex.what() << "\n";
+        }
+    }
+
     std::cerr << "Found " << hits.size() << " string occurrence(s) to search for xrefs to.\n";
     for (const auto& h : hits)
     {
@@ -353,11 +376,26 @@ int main(int argc, char** argv)
             const auto& op = operands[i];
             const bool isRipRelMem = op.type == ZYDIS_OPERAND_TYPE_MEMORY && op.mem.base == ZYDIS_REGISTER_RIP;
             const bool isRelativeImm = op.type == ZYDIS_OPERAND_TYPE_IMMEDIATE && op.imm.is_relative;
-            if (!isRipRelMem && !isRelativeImm) continue;
+            // Absolute 64-bit immediate (2026-09-06): a function with no
+            // direct CALL/JMP/LEA xref and no raw stored-pointer match
+            // anywhere in the file (see docs/research/...) may still have
+            // its address loaded via `mov reg, imm64` - e.g. to populate a
+            // runtime registration table/struct at static-init time. Zydis
+            // reports this as a non-relative immediate operand.
+            const bool isAbsoluteImm = op.type == ZYDIS_OPERAND_TYPE_IMMEDIATE && !op.imm.is_relative;
+            if (!isRipRelMem && !isRelativeImm && !isAbsoluteImm) continue;
 
             std::uint64_t absoluteAddress = 0;
-            if (!ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(&instruction, &op, runtimeAddress, &absoluteAddress))) continue;
+            if (isAbsoluteImm)
+            {
+                absoluteAddress = op.imm.value.u;
+            }
+            else if (!ZYAN_SUCCESS(ZydisCalcAbsoluteAddress(&instruction, &op, runtimeAddress, &absoluteAddress)))
+            {
+                continue;
+            }
 
+            bool matched = false;
             for (const auto& h : hits)
             {
                 // Small tolerance window: a reference might point a few bytes
@@ -368,7 +406,21 @@ int main(int argc, char** argv)
                     ++xrefCount;
                     dumpContext(image, decoder, runtimeAddress, offset,
                                 "[" + h.encoding + "] \"" + h.label + "\"", out);
+                    matched = true;
                     break;
+                }
+            }
+            if (!matched)
+            {
+                for (const auto& h : exactHits)
+                {
+                    if (absoluteAddress == h.va)
+                    {
+                        ++xrefCount;
+                        dumpContext(image, decoder, runtimeAddress, offset,
+                                    "[" + h.encoding + "] call/ref to 0x" + h.label, out);
+                        break;
+                    }
                 }
             }
         }
@@ -379,6 +431,58 @@ int main(int argc, char** argv)
 
     std::cerr << "Decoded " << instructionCount << " instructions, found " << xrefCount << " xref(s) to target strings.\n";
     out << "\n\nSummary: decoded " << instructionCount << " instructions, found " << xrefCount << " xref(s).\n";
+    out.flush(); // an uncaught exception below would abort() without running
+                 // ofstream's destructor, silently discarding any unflushed,
+                 // buffered report content written after this point.
+
+    // Data-pointer search (2026-09-06): a function with zero direct CALL/JMP
+    // xrefs (see exactHits above) is almost certainly invoked through a
+    // vtable slot instead - the compiler stores the function's raw address
+    // as an 8-byte pointer in a data section (.rdata/.data), not as a
+    // relative CALL/JMP immediate, so the code-xref scan above can never see
+    // it. This instead searches every byte of the file for that raw 8-byte
+    // little-endian pointer value, wherever it occurs - finding a vtable
+    // slot confirms the "virtual function" hypothesis and locates the class.
+    // Usage: PeXrefScanner <exe> <out.txt> ptr:0x1418c7b60 ...
+    for (int i = 3; i < argc; ++i)
+    {
+        const std::string arg = argv[i];
+        if (arg.rfind("ptr:", 0) != 0) continue;
+        try
+        {
+            const std::uint64_t va = std::stoull(arg.substr(4), nullptr, 16);
+            std::uint8_t needle[8];
+            for (int b = 0; b < 8; ++b) needle[b] = static_cast<std::uint8_t>((va >> (b * 8)) & 0xFF);
+            std::string needleStr(reinterpret_cast<const char*>(needle), 8);
+            const auto fileHits = findAllAscii(image.bytes, needleStr);
+            out << "\n=== POINTER SEARCH: raw 8-byte value 0x" << std::hex << va << std::dec
+                << " found " << fileHits.size() << " time(s) ===\n";
+            std::cerr << "Pointer search for 0x" << std::hex << va << std::dec
+                       << ": " << fileHits.size() << " hit(s)\n";
+            for (auto off : fileHits)
+            {
+                const auto rva = image.fileOffsetToRva(off);
+                std::string sec = "?";
+                for (const auto& s : image.sections)
+                {
+                    if (rva >= 0 && static_cast<std::uint64_t>(rva) >= s.virtualAddress
+                            && static_cast<std::uint64_t>(rva) < s.virtualAddress + s.virtualSize)
+                    {
+                        sec = s.name;
+                        break;
+                    }
+                }
+                const auto hitVa = rva >= 0 ? image.imageBase + static_cast<std::uint64_t>(rva) : 0;
+                out << "  file offset 0x" << std::hex << off << " -> VA 0x" << hitVa
+                    << std::dec << " (section " << sec << ")\n";
+            }
+        }
+        catch (const std::exception& ex)
+        {
+            out << "\n=== POINTER SEARCH: bad argument '" << arg << "': " << ex.what() << " ===\n";
+        }
+        out.flush();
+    }
 
     // Optional: dump specific already-known function addresses directly
     // (follow-up analysis once an xref pointed us at a callee address).
@@ -388,17 +492,26 @@ int main(int argc, char** argv)
     for (int i = 3; i < argc; ++i)
     {
         std::string arg = argv[i];
-        std::size_t maxBytes = 1024;
-        const auto colonPos = arg.find(':');
-        if (colonPos != std::string::npos)
+        if (arg.rfind("xref:", 0) == 0 || arg.rfind("ptr:", 0) == 0) continue; // handled above, not a dumpFunctionAt request
+        try
         {
-            maxBytes = std::stoull(arg.substr(colonPos + 1));
-            arg = arg.substr(0, colonPos);
+            std::size_t maxBytes = 1024;
+            const auto colonPos = arg.find(':');
+            if (colonPos != std::string::npos)
+            {
+                maxBytes = std::stoull(arg.substr(colonPos + 1));
+                arg = arg.substr(0, colonPos);
+            }
+            const std::uint64_t va = std::stoull(arg, nullptr, 16);
+            std::cerr << "Dumping function at VA 0x" << std::hex << va << std::dec
+                       << " (" << maxBytes << " bytes)...\n";
+            dumpFunctionAt(image, va, maxBytes, argv[i], out);
         }
-        const std::uint64_t va = std::stoull(arg, nullptr, 16);
-        std::cerr << "Dumping function at VA 0x" << std::hex << va << std::dec
-                   << " (" << maxBytes << " bytes)...\n";
-        dumpFunctionAt(image, va, maxBytes, argv[i], out);
+        catch (const std::exception& ex)
+        {
+            out << "\n=== FUNCTION DUMP: bad argument '" << argv[i] << "': " << ex.what() << " ===\n";
+        }
+        out.flush();
     }
 
     std::cout << "Done. Decoded " << instructionCount << " instructions, found " << xrefCount << " xref(s). Report: " << outputPath << "\n";

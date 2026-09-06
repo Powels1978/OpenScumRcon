@@ -1,5 +1,39 @@
 # Changelog
 
+## 2026-09-06 (3. Session) — Durchbruch: echter nativer Einstiegspunkt gefunden
+
+Direkte Fortsetzung. Ein PolyHook_2-Inline-Hook (nur beobachtend, kein
+Verhaltenseingriff) auf die alte, per String-Suche gefundene
+Autorisierungsfunktion (`0x1418c7b60`) wurde installiert und feuerte bei einem
+echten, über Herbies RCON ausgelösten `SetGodMode`-Aufruf **kein einziges
+Mal** - empirischer Beweis (nicht nur Vermutung), dass dieser gesamte
+Codepfad tot/unerreichbar ist.
+
+Stattdessen wurde der bereits vorhandene ProcessEvent-Hook um einen
+kostengünstigen Zeigervergleich auf die garantiert bei jeder echten
+Admin-Änderung feuernde Multicast-RPC `Prisoner:NetMulticast_UpdateAdminStates`
+erweitert, der bei Treffer per `CaptureStackBackTrace` (Standard-Windows-API)
+den kompletten Aufruf-Stack samt Modulnamen loggt. Ergebnis: **Herbies eigenes
+Mod (`scum_rcon\dlls\main.dll`) taucht direkt im Call-Stack auf** - reine
+Beobachtung der Modulzugehörigkeit von Rücksprungadressen, kein Lesen oder
+Disassemblieren von Herbies Code.
+
+Die Adresse, die Herbies Mod direkt in `SCUMServer.exe` aufruft, wurde
+identifiziert (`0x1419063d0`) und disassembliert: Registry-Lookup,
+Executor-Auflösung, Ausführung, formatierter Antwort-Versand per virtuellem
+Aufruf. Wichtigster Einzelfund: die Executor-Auflösung
+(`0x1418E8A10`) liest **keinen übergebenen Parameter**, sondern ruft eine
+Hilfsfunktion **ganz ohne Argumente** auf - eindeutiges Zeichen für Zugriff
+auf Thread-lokalen/globalen Zustand. Das erklärt endgültig, warum jeder
+bisherige Aufrufversuch (egal über welchen Weg) wirkungslos blieb.
+
+Nebenbefund auf Nutzerwunsch: `SCUM.db`/`SCUM.db-wal` wurden heruntergeladen
+und durchsucht - GodMode/Immortality/Admin-Status stehen **nirgends** in der
+Datenbank (auch `elevated_users` ist leer). Bestätigt: reine
+Laufzeit-Flags bzw. `AdminUsers.ini`, nicht persistiert.
+
+Details: [`docs/research/2026-09-06-native-entry-point-discovery.md`](research/2026-09-06-native-entry-point-discovery.md).
+
 ## 2026-09-06 (Folgesession) — Chat_Server_ProcessAdminCommand ebenfalls wirkungslos; ProcessEvent-Capture beweist: Herbie nutzt keine Reflection zum Triggern
 
 Direkte Fortsetzung. `PlayerRpcChannel::Chat_Server_ProcessAdminCommand` wurde
