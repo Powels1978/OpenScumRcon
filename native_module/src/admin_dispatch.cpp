@@ -235,4 +235,17 @@ namespace openscumrcon
                    "C:\\PowelsLocalBridge\\openscumrcon_permission_levels.log";
         return summary.str();
     }
+
+    std::string AdminDispatch::dump_test_process_admin_command_address() const
+    {
+        if (!m_test_process_admin_command)
+        {
+            return "error: Test_ProcessAdminCommand UFunction not resolved";
+        }
+        const auto func_ptr = m_test_process_admin_command->GetFuncPtr();
+        std::ostringstream out;
+        out << "ok: Test_ProcessAdminCommand native func ptr = 0x" << std::hex
+            << reinterpret_cast<std::uintptr_t>(func_ptr);
+        return out.str();
+    }
 }

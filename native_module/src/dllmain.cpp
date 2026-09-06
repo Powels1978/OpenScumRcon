@@ -189,6 +189,10 @@ private:
                 {
                     response = m_dispatch.dump_admin_command_permission_levels();
                 }
+                else if (item.command_text == "!dump_func_address")
+                {
+                    response = m_dispatch.dump_test_process_admin_command_address();
+                }
                 else
                 {
                     m_capturing_calls.store(true, std::memory_order_relaxed);

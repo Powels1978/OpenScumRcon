@@ -382,12 +382,23 @@ int main(int argc, char** argv)
 
     // Optional: dump specific already-known function addresses directly
     // (follow-up analysis once an xref pointed us at a callee address).
-    // Usage: PeXrefScanner <exe> <out.txt> 0x141A45AA0 0x141A4D050 ...
+    // Usage: PeXrefScanner <exe> <out.txt> 0x141A45AA0 0x141A4D050:4096 ...
+    // (":<bytes>" suffix overrides the default 1024-byte dump length, for
+    // functions too large to fit the default window.)
     for (int i = 3; i < argc; ++i)
     {
-        const std::uint64_t va = std::stoull(argv[i], nullptr, 16);
-        std::cerr << "Dumping function at VA 0x" << std::hex << va << std::dec << "...\n";
-        dumpFunctionAt(image, va, 1024, argv[i], out);
+        std::string arg = argv[i];
+        std::size_t maxBytes = 1024;
+        const auto colonPos = arg.find(':');
+        if (colonPos != std::string::npos)
+        {
+            maxBytes = std::stoull(arg.substr(colonPos + 1));
+            arg = arg.substr(0, colonPos);
+        }
+        const std::uint64_t va = std::stoull(arg, nullptr, 16);
+        std::cerr << "Dumping function at VA 0x" << std::hex << va << std::dec
+                   << " (" << maxBytes << " bytes)...\n";
+        dumpFunctionAt(image, va, maxBytes, argv[i], out);
     }
 
     std::cout << "Done. Decoded " << instructionCount << " instructions, found " << xrefCount << " xref(s). Report: " << outputPath << "\n";

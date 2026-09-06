@@ -81,7 +81,19 @@ dieses Repos) hat mit genau diesem Muster einmal einen echten Serverabsturz ausg
 als es versuchte, eine abgefangene Server-RPC-Funktion synthetisch außerhalb ihres
 normalen Call-Stacks aufzurufen.
 
-## Gefundener Dispatch-Mechanismus (Stand 2026-09-04, Abend)
+## Gefundener Dispatch-Mechanismus (Stand 2026-09-04, Abend) — ENDGÜLTIG VERWORFEN, siehe Update 2026-09-06
+
+**Update 2026-09-06**: Disassemblierung der nativen Implementierung hinter
+`Test_ProcessAdminCommand` (Details:
+[`docs/research/2026-09-05-authorization-gate-analysis.md`](research/2026-09-05-authorization-gate-analysis.md#update-2026-09-06-test_processadmincommand-ist-im-shipping-build-eine-leere-stub-funktion))
+hat die Frage aus "Noch offen" unten ("Ob `Test_`-Funktionen in einem
+Shipping-Build zuverlässig erhalten bleiben") endgültig beantwortet: **die
+Funktion besteht in der aktuell installierten Shipping-Build-Version bereits
+JETZT nur aus einem einzelnen `ret`-Byte — sie tut nichts.** Kein
+Autorisierungsproblem, kein Executor-Auflösungsproblem, einfach eine leere
+Funktion. Dieser gesamte Abschnitt (der ursprünglich als Lösung galt) ist damit
+als Sackgasse einzustufen und wird nur aus Transparenzgründen nicht gelöscht.
+Der neue Fokus ist `PlayerRpcChannel::Chat_Server_ProcessAdminCommand`.
 
 Ein Live-Reflection-Dump (UE4SS' `DumpAllObjects()`, ausgeführt auf einem Testserver mit
 0 Spielern online, nach expliziter Freigabe — siehe `docs/CHANGELOG.md`) hat den

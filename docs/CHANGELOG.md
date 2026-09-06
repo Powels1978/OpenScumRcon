@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-09-06 — Durchbruch: Test_ProcessAdminCommand ist im Shipping-Build eine leere Stub-Funktion
+
+Direkte Fortsetzung der letzten Session. Die native Implementierung hinter
+`Test_ProcessAdminCommand` wurde per Disassemblierung untersucht:
+
+1. Funktionsadresse zur Laufzeit per Reflection ausgelesen
+   (`UFunction::GetFuncPtr()`, neuer Sentinel-RCON-Befehl
+   `!dump_func_address`) — dafür Neustart des Testservers (niemand online).
+2. Auf die statische Datei-Adresse umgerechnet (ASLR-Offset über die
+   tatsächliche Prozess-Ladeadresse ermittelt).
+3. `PeXrefScanner`s `dumpFunctionAt()` um ein `:<bytes>`-Suffix für
+   individuelle Dump-Längen erweitert, dann rein statisch (kein weiterer
+   Neustart) disassembliert.
+
+**Ergebnis**: Die gefundene Adresse ist exakt der von UnrealHeaderTool
+generierte `execTest_ProcessAdminCommand`-Wrapper (FFrame-Parameter-Unpacking,
+zweifelsfrei am bekannten Muster erkennbar). Der darin enthaltene Aufruf der
+"echten" Implementierung (`call 0x14090A820`, mit exakt den erwarteten
+Argumenten) landet auf einer Adresse, die aus genau einem Byte besteht:
+`ret`. **`Test_ProcessAdminCommand` tut im Shipping-Build buchstäblich gar
+nichts.**
+
+Das erklärt endgültig, warum jeder Aufruf über diese Funktion seit Tagen
+wirkungslos blieb - nicht wegen Berechtigung oder Executor-Auflösung (die
+Analyse der Vorsession zeigte, dass diese für einen echten Admin-Account
+eigentlich durchlaufen sollte), sondern weil die Funktion selbst leer ist.
+Vermutlich ein reiner Editor-/Testhelfer, dessen Körper in Shipping-Builds
+wegoptimiert wird.
+
+**Konsequenz**: `Test_ProcessAdminCommand` ist als Grundlage für dieses
+Projekt endgültig verworfen (siehe `docs/ARCHITECTURE.md`). Neuer Fokus:
+`PlayerRpcChannel::Chat_Server_ProcessAdminCommand`, der tatsächliche
+Produktionspfad, den echte Admin-Spieler heute schon nutzen.
+
+Details: [`docs/research/2026-09-05-authorization-gate-analysis.md`](research/2026-09-05-authorization-gate-analysis.md).
+
 ## 2026-09-05 (3. Session) — Berechtigungsstufe per Reflection ausgelesen: SetGodMode braucht nur AdminUsers.ini-Eintrag
 
 Statt der zunächst geplanten rohen Speicher-Offsets wurde das native RCON-Modul

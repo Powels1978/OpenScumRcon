@@ -65,6 +65,16 @@ namespace openscumrcon
         // real SCUM command - safe to call with nobody online.
         std::string dump_admin_command_permission_levels() const;
 
+        // Diagnostic (2026-09-06): returns the native function pointer behind
+        // Test_ProcessAdminCommand (UFunction::GetFuncPtr()) as a hex string,
+        // so it can be handed to tools/pe_xref_scanner for static
+        // disassembly - the next step in figuring out how it resolves an
+        // "Executor" from WorldContextObject (see docs/research/
+        // 2026-09-05-authorization-gate-analysis.md, "Update 2. Folgesession").
+        // Cheap reflection call, not a UObject scan - no game-thread stall
+        // risk like dump_admin_command_permission_levels() had.
+        std::string dump_test_process_admin_command_address() const;
+
         bool is_initialized() const { return m_initialized; }
 
     private:

@@ -257,6 +257,68 @@ Nächster sinnvoller Schritt: die native Implementierung von
 über die bereits aufgelöste `UFunction*` beziehbar), um zu sehen, wie/ob sie
 intern überhaupt einen `Executor` aus dem `WorldContextObject` konstruiert.
 
+## Update 2026-09-06: `Test_ProcessAdminCommand` ist im Shipping-Build eine leere Stub-Funktion
+
+Um den vermuteten Blocker "VOR" der Berechtigungsprüfung zu finden (siehe oben),
+wurde die native Implementierung hinter `Test_ProcessAdminCommand` direkt
+untersucht:
+
+1. Die Adresse wurde zur Laufzeit per Reflection ausgelesen
+   (`UFunction::GetFuncPtr()`, neue Diagnosefunktion
+   `AdminDispatch::dump_test_process_admin_command_address()`, Trigger über
+   den Sentinel-RCON-Befehl `!dump_func_address`). Ergebnis (ASLR-verschoben):
+   `0x7ff7ad768cd0`.
+2. Umgerechnet auf die statische Datei-Adresse über die tatsächliche
+   Prozess-Ladeadresse (`0x7ff7aafc0000`, per `Get-Process ...
+   MainModule.BaseAddress`): Offset `0x27a8cd0`, statische VA
+   `0x1427a8cd0`.
+3. `PeXrefScanner`s `dumpFunctionAt()` wurde um ein `:<bytes>`-Suffix für
+   individuelle Dump-Längen erweitert und gegen diese Adresse laufen lassen
+   (rein statische Dateianalyse, kein weiterer Server-Neustart nötig). Rohdaten:
+   [`pexref_funcdump_report3_2026-09-06.txt`](pexref_funcdump_report3_2026-09-06.txt).
+
+**Befund**: `0x1427a8cd0` ist exakt der von UnrealHeaderTool generierte
+`execTest_ProcessAdminCommand`-Wrapper — die Disassemblierung zeigt zweifelsfrei
+das bekannte Muster (`P_GET_OBJECT`/`P_GET_PROPERTY`: `FFrame::Code`
+bedingt inkrementieren, zwei Parameter aus dem `FFrame` lesen, dann der
+eigentliche native Aufruf, dann `FString`-Destruktor-Aufruf für den
+`commandText`-Parameter). Der eigentliche Aufruf der "echten" Implementierung
+sitzt bei `0x1427a8d7e call 0x14090A820` — mit exakt den beiden erwarteten
+Argumenten (`RCX=WorldContextObject`, `RDX=&commandText`).
+
+Diese Zieladresse wurde ebenfalls disassembliert (Rohdaten:
+[`pexref_funcdump_report4_2026-09-06.txt`](pexref_funcdump_report4_2026-09-06.txt)):
+
+```
+0x14090a820  ret 0x00
+0x14090a823  int3
+... (Padding bis zur naechsten, unabhaengigen Funktion bei 0x14090a830)
+```
+
+**`UMiscStatics::Test_ProcessAdminCommand` besteht im Shipping-Build aus genau
+einem Byte (`C3`, `ret`) — die Funktion tut buchstäblich nichts.** Das erklärt
+vollständig und abschließend, warum jeder bisherige Versuch, sie per
+`ProcessEvent`-Reflection aufzurufen, ergebnislos blieb: nicht wegen fehlender
+Executor-Identität, nicht wegen der Berechtigungsprüfung (die, wie oben gezeigt,
+für einen echten Admin-Account eigentlich durchlaufen sollte) — die Funktion
+ist in dieser Build-Konfiguration schlicht leer. Vermutlich ist
+`Test_ProcessAdminCommand` ein reiner Editor-/Entwicklungs-Helfer (Namenskonvention
+"Test_"-Präfix passt dazu), dessen Körper hinter einem
+`#if !UE_BUILD_SHIPPING`-o.ä. Compile-Schalter steht und in Shipping-Builds
+komplett wegoptimiert wird.
+
+### Konsequenz für die Projektrichtung
+
+`Test_ProcessAdminCommand` ist als Einstiegspunkt für diesen Nachbau
+**endgültig ungeeignet** — unabhängig davon, wie gut Executor/Berechtigung
+aufgelöst würden, hätte ein Aufruf nie eine Wirkung gehabt. Der bereits in
+`docs/ARCHITECTURE.md` als "der echte Produktionspfad" notierte
+`PlayerRpcChannel::Chat_Server_ProcessAdminCommand` (der tatsächliche
+Chat-Befehls-Pfad, den jeder eingeloggte Admin-Spieler heute schon
+regulär nutzt) muss also der neue Fokus werden — dieser darf, da er real
+im laufenden Spielbetrieb verwendet wird, nicht ebenfalls eine leere
+Shipping-Stub sein.
+
 ## Noch offen (nächster Schritt)
 
 - Berechtigungsstufen-Byte (`+0x52`) für `SetGodMode` und andere Zielkommandos

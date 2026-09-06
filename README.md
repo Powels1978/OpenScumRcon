@@ -17,15 +17,17 @@ client. This project rebuilds the same functionality independently.
 
 ## Status
 
-**Early development, builds and runs, not yet reliable.** A real Source RCON
-listener, worker-thread/game-thread command queue, and a call into SCUM's
-`Test_ProcessAdminCommand` are implemented and compile cleanly against UE4SS.
-What's still open: the underlying SCUM call was verified (live A/B test) to
-run without error but not to reliably apply the same effect a real admin
-command does — see [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for the full,
-warts-and-all test history. Not yet deployed to or tested against a live
-server with this new code. See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-for the technical approach.
+**Early development, builds and runs, dispatch mechanism under revision.** A
+real Source RCON listener and worker-thread/game-thread command queue are
+implemented and working. The originally planned dispatch path,
+`Test_ProcessAdminCommand`, was confirmed via disassembly to be an empty stub
+in the Shipping build (a single `ret` instruction — it does nothing at
+runtime, regardless of authorization or arguments) and has been abandoned.
+Current focus: `PlayerRpcChannel::Chat_Server_ProcessAdminCommand`, the actual
+path real admin players already use. See
+[`docs/CHANGELOG.md`](docs/CHANGELOG.md) for the full, warts-and-all
+investigation history and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for
+the technical approach.
 
 ## How it's meant to work
 
@@ -76,14 +78,17 @@ auszulösen. Dieses Projekt baut dieselbe Funktionalität unabhängig nach.
 
 ### Status
 
-**Frühe Entwicklung, baut und läuft, aber noch nicht zuverlässig.** Ein echter
-Source-RCON-Listener, die Worker-Thread/Game-Thread-Befehls-Queue und ein Aufruf
-von SCUMs `Test_ProcessAdminCommand` sind implementiert und bauen sauber gegen
-UE4SS. Was noch offen ist: der zugrundeliegende SCUM-Aufruf wurde per Live-A/B-Test
-zwar als fehlerfrei laufend, aber **nicht zuverlässig wirksam** bestätigt — die
-volle, ungeschönte Testhistorie steht in [`docs/CHANGELOG.md`](docs/CHANGELOG.md).
-Noch nicht mit diesem neuen Code gegen einen echten Server getestet/deployt. Siehe
-[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) für die technische Umsetzung.
+**Frühe Entwicklung, baut und läuft, Dispatch-Mechanismus wird gerade neu
+ausgerichtet.** Ein echter Source-RCON-Listener und die
+Worker-Thread/Game-Thread-Befehls-Queue sind implementiert und funktionieren.
+Der ursprünglich geplante Dispatch-Weg, `Test_ProcessAdminCommand`, wurde per
+Disassemblierung als leere Stub-Funktion im Shipping-Build entlarvt (nur ein
+einzelnes `ret` — sie tut zur Laufzeit nichts, unabhängig von Berechtigung
+oder Argumenten) und wurde verworfen. Aktueller Fokus:
+`PlayerRpcChannel::Chat_Server_ProcessAdminCommand`, der tatsächliche Pfad,
+den echte Admin-Spieler bereits nutzen. Die volle, ungeschönte
+Untersuchungshistorie steht in [`docs/CHANGELOG.md`](docs/CHANGELOG.md), die
+technische Umsetzung in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ### Wie es funktionieren soll
 
