@@ -10,7 +10,9 @@
 // authorization. See docs/research/2026-09-05-authorization-gate-analysis.md,
 // "Update 2026-09-06", and docs/ARCHITECTURE.md.
 //
-// CURRENT APPROACH (2026-09-06): call the real production RPC instead -
+// GodMode now uses the dedicated native dispatcher (godmode_dispatch.cpp).
+// The following describes only the historical fallback for other commands:
+// PREVIOUS APPROACH (2026-09-06): call the production RPC -
 //
 //   UPlayerRpcChannel::Chat_Server_ProcessAdminCommand(FString commandText)
 //
@@ -26,6 +28,7 @@
 // process, so that should apply here.
 
 #include <string>
+#include "command_authority.hpp"
 
 namespace RC::Unreal
 {
@@ -50,13 +53,14 @@ namespace openscumrcon
         // pre-hook that drains CommandQueue). Strips a leading '#' the same
         // way local_bridge's SourceRcon.run() does before dispatch.
         //
-        // Return value is currently a best-effort placeholder, NOT SCUM's
+        // GodMode returns a native-result and player-state-verified response.
+        // For other commands, the return value remains a placeholder, NOT SCUM's
         // real response text - see the "Rueckgabeformat" open item in
         // docs/ARCHITECTURE.md. The underlying UFunction returns no value
         // over the Lua calling convention we probed; whether it is reachable
         // as a real return parameter from C++ is one of the first things to
         // check once this can be tested live.
-        std::string dispatch_command(const std::string& raw_command_text);
+        std::string dispatch_command(const std::string& raw_command_text, CommandAuthority authority = CommandAuthority::none);
 
         // Diagnostic (2026-09-05): reads the raw permission-level byte
         // (offset +0x52 on every UAdminCommand_* instance/CDO - see

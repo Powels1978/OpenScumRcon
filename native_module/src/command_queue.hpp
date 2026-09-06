@@ -8,6 +8,7 @@
 // per its own log output - "game-thread drain installed via
 // EngineTick-pre-callback").
 
+#include "command_authority.hpp"
 #include <deque>
 #include <future>
 #include <mutex>
@@ -19,6 +20,7 @@ namespace openscumrcon
     {
         std::string command_text;
         std::promise<std::string> response;
+        CommandAuthority authority = CommandAuthority::none;
     };
 
     class CommandQueue
@@ -27,13 +29,18 @@ namespace openscumrcon
         // Called from the worker thread. Blocks the calling connection
         // handler until the game thread has produced a response (or the
         // returned future is abandoned, e.g. on shutdown).
-        std::future<std::string> enqueue(std::string command_text)
+        std::future<std::string> enqueue(std::string command_text, CommandAuthority authority = CommandAuthority::none)
         {
             std::promise<std::string> promise;
             std::future<std::string> future = promise.get_future();
+            if (!is_rcon_authorized(authority))
+            {
+                promise.set_value("error: authenticated RCON connection required");
+                return future;
+            }
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
-                m_pending.push_back(PendingCommand{std::move(command_text), std::move(promise)});
+                m_pending.push_back(PendingCommand{std::move(command_text), std::move(promise), authority});
             }
             return future;
         }

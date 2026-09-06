@@ -20,7 +20,7 @@ namespace openscumrcon::protocol
     // Practical payload chunk size for splitting long responses across
     // multiple SERVERDATA_RESPONSE_VALUE packets. Matches the 4096-byte
     // convention already handled by the existing client (see
-    // local_bridge/powels_local_bridge.py, recv_packet()/SourceRcon.run()).
+    // existing Source RCON clients, recv_packet()/SourceRcon.run()).
     constexpr std::size_t MAX_RESPONSE_CHUNK = 4096;
 
     struct Packet

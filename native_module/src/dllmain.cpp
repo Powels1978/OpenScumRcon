@@ -22,6 +22,8 @@
 #include <Unreal/UObjectGlobals.hpp>
 
 #include "admin_dispatch.hpp"
+#include "godmode_trace.hpp"
+#include "godmode_dispatch.hpp"
 #include "command_queue.hpp"
 #include "rcon_server.hpp"
 
@@ -121,7 +123,7 @@ namespace
         if (g_capturing_native_calls.load(std::memory_order_relaxed))
         {
             void* returnAddress = _ReturnAddress();
-            std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_native_hook.log", std::ios::app);
+            std::ofstream file("openscumrcon_native_hook.log", std::ios::app);
             if (file.is_open())
             {
                 file << "Execute called: this=" << thisPtr << " executor=" << executor
@@ -153,77 +155,26 @@ namespace
         return moduleBase + (staticVa - 0x140000000ULL);
     }
 
-    // Bypass hook for the registration-check tail-call (2026-09-06) - see
-    // docs/research/2026-09-06-native-entry-point-discovery.md, "der native
-    // Aufruf wurde tatsächlich versucht". A real, genuine incoming RPC
-    // registers the currently-active thread context into a structure hanging
-    // off the command object (this+0x20+0x10) as a side effect of network
-    // delivery, before this check runs; our own out-of-band call from the
-    // EngineTick never goes through that delivery path, so the check always
-    // finds nothing registered and fails closed.
-    //
-    // This module already IS the trust boundary for admin commands - callers
-    // must authenticate with the RCON password before any command reaches
-    // this point at all (see rcon_server.cpp). SCUM's own internal check here
-    // is answering a question ("is there a legitimate live RPC context for
-    // this call") that is already answered by that authentication for the
-    // brief moment we're inside our own dispatch. So rather than fabricate a
-    // fake executor object or otherwise touch other memory, this hook
-    // narrowly overrides just this one check's result, and ONLY while
-    // g_bypass_registration_check is set (set/cleared immediately around our
-    // own call in try_native_setgodmode() - see below). Any other caller of
-    // this same function elsewhere in the game (unrelated systems reusing
-    // this generic lookup) is completely unaffected, since the flag is false
-    // the rest of the time.
+    // SCUM build 2026-08-27: this is UObject::GetInterfaceAddress, not a
+    // thread-registration gate. Always preserve the original result.
     constexpr std::uint64_t kRegistrationCheckStaticVa = 0x142D02DB0ULL;
-
-    using RegistrationCheckFn = void*(*)(void* key, void* singleton);
-
+    using RegistrationCheckFn = void*(*)(void* owner, void* interfaceClass);
     std::unique_ptr<PLH::x64Detour> g_registration_check_detour;
     std::uint64_t g_registration_check_trampoline = 0;
-    std::atomic<bool> g_bypass_registration_check{false};
-
-    // Read-only observation mode (2026-09-06), separate from the bypass
-    // above: logs (key, singleton, result) for every REAL call to this
-    // function - i.e. while playing normally, including when a genuine
-    // admin types a command in chat. Never changes the return value. Goal:
-    // compare what a genuinely successful call looks like (real player, or
-    // Herbie's own working RCON) against our own failing synthetic call, to
-    // find out what's actually different. Manual on/off via
-    // !capture_registration_start/!capture_registration_stop, same pattern
-    // as the other capture hooks in this file.
     std::atomic<bool> g_capturing_registration_calls{false};
+    std::atomic<unsigned> g_registration_log_count{0};
 
-    void* detour_registration_check(void* key, void* singleton)
+    void* detour_registration_check(void* owner, void* interfaceClass)
     {
-        if (g_bypass_registration_check.load(std::memory_order_relaxed))
+        void* result = reinterpret_cast<RegistrationCheckFn>(g_registration_check_trampoline)(owner, interfaceClass);
+        openscumrcon::godmode_trace::observe_interface(owner, interfaceClass, result);
+        // Legacy address-only capture is bounded too. Prefer !godmode_trace_start.
+        if (g_capturing_registration_calls.load(std::memory_order_relaxed) &&
+            g_registration_log_count.fetch_add(1, std::memory_order_relaxed) < 256)
         {
-            // Corrected 2026-09-06 after a live crash: the disassembly shows
-            // TWO different "found" return shapes (a simple "return key"
-            // fast path, and a sparse-array lookup path that returns
-            // "key + offset-from-the-found-entry"). The first attempt
-            // assumed the simple shape and crashed the server. Observing a
-            // REAL, successful admin-command call (via the read-only
-            // observation mode below, comparing a genuine player-typed
-            // #SetGodMode against the rare/matching key) showed the actual
-            // relationship: result == key + 0x580 exactly, every time (3/3
-            // observed real calls, including a second unrelated admin
-            // command sharing the same key). This bypass now reproduces
-            // that exact, empirically-confirmed shape instead of guessing.
-            return static_cast<char*>(key) + 0x580;
+            std::ofstream file("openscumrcon_registration_calls.log", std::ios::app);
+            if (file) file << "owner=" << owner << " interfaceClass=" << interfaceClass << " result=" << result << "\n";
         }
-
-        void* result = reinterpret_cast<RegistrationCheckFn>(g_registration_check_trampoline)(key, singleton);
-
-        if (g_capturing_registration_calls.load(std::memory_order_relaxed))
-        {
-            std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_registration_calls.log", std::ios::app);
-            if (file.is_open())
-            {
-                file << "key=" << key << " singleton=" << singleton << " result=" << result << "\n";
-            }
-        }
-
         return result;
     }
 
@@ -255,7 +206,7 @@ namespace
         std::ostringstream out;
         out << "ok: 0x142685AE0() returned " << result;
 
-        std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_context_dump.log", std::ios::trunc);
+        std::ofstream file("openscumrcon_context_dump.log", std::ios::trunc);
         if (file.is_open())
         {
             file << "0x142685AE0() returned " << result << "\n";
@@ -279,68 +230,6 @@ namespace
                 file << "\n";
             }
         }
-        return out.str();
-    }
-
-    // Real end-to-end test (2026-09-06) of the native entry point found via
-    // stack-backtrace analysis (see docs/research/
-    // 2026-09-06-native-entry-point-discovery.md). RCX = the specific
-    // AdminCommand_* instance (verb selection already happened by picking
-    // this instance, matching the disassembly - no verb string needed in the
-    // args). RDX = a TArray<FString>-shaped header {Data, Num, Max} pointing
-    // at the command's arguments, matching what the disassembly reads at
-    // [rdi]/[rdi+8]. The callee resolves its own execution context
-    // internally (0x1418E8A10, already confirmed callable/safe) - we don't
-    // set that up ourselves.
-    struct FStringArrayHeader
-    {
-        RC::Unreal::FString* Data;
-        std::int32_t Num;
-        std::int32_t Max;
-    };
-
-    using AdminCommandEntryFn = bool(*)(void* thisPtr, FStringArrayHeader* args);
-
-    std::string try_native_setgodmode(const std::string& boolArg, const std::string& steamIdArg)
-    {
-        RC::Unreal::UObject* commandInstance = RC::Unreal::UObjectGlobals::StaticFindObject<RC::Unreal::UObject*>(
-                nullptr, nullptr, STR("/Script/SCUM.Default__AdminCommand_SetGodMode"));
-        if (!commandInstance)
-        {
-            return "error: AdminCommand_SetGodMode instance not found";
-        }
-
-        RC::Unreal::FString elements[2] = {
-                RC::Unreal::FString(RC::to_wstring(boolArg)),
-                RC::Unreal::FString(RC::to_wstring(steamIdArg)),
-        };
-        FStringArrayHeader argsHeader{elements, 2, 2};
-
-        const auto func = reinterpret_cast<AdminCommandEntryFn>(resolve_runtime_address(0x1419063d0ULL));
-
-        // Bypass DISABLED (2026-09-06) after TWO live crashes with two
-        // different guessed return shapes (plain "return key", then the
-        // empirically-observed "return key+0x580") - both crashed the
-        // server. Whatever this function's real "found" return value points
-        // to clearly carries more meaning than a bare address; fabricating
-        // it without fully understanding the pointed-to structure is not
-        // safe. g_bypass_registration_check intentionally left false here -
-        // this call now only exercises the plain, unmodified native path
-        // (same as the very first attempt, which returned a clean `false`
-        // with no crash).
-        bool result = false;
-        std::string status = "ok";
-        try
-        {
-            result = func(commandInstance, &argsHeader);
-        }
-        catch (...)
-        {
-            status = "exception during native call";
-        }
-
-        std::ostringstream out;
-        out << status << ": native entry point returned " << (result ? "true" : "false");
         return out.str();
     }
 
@@ -380,7 +269,7 @@ namespace
         out << status << ": 0x1418E8A10(commandInstance=" << static_cast<void*>(commandInstance)
             << ") returned " << result;
 
-        std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_executor_dump.log", std::ios::trunc);
+        std::ofstream file("openscumrcon_executor_dump.log", std::ios::trunc);
         if (file.is_open())
         {
             file << "0x1418E8A10(commandInstance=" << static_cast<void*>(commandInstance)
@@ -446,6 +335,7 @@ public:
 
     ~OpenScumRconNative() override
     {
+        openscumrcon::godmode_trace::shutdown();
         m_rcon_server.stop();
         if (m_engine_tick_callback != RC::Unreal::Hook::ERROR_ID)
         {
@@ -480,12 +370,8 @@ public:
                 STR("[OpenScumRconNative] NetMulticast_UpdateAdminStates resolved={}\n"),
                 static_cast<void*>(m_admin_states_multicast_function));
 
-        // config.ini lives next to this mod's own scripts/dlls folder, same
-        // convention as scum_rcon's own config.ini. Path is relative to the
-        // SCUM server's working directory (Binaries/Win64), matching how
-        // other mods in this project already locate their own config/state
-        // files (see local_bridge's C:\PowelsLocalBridge\ convention for a
-        // different, absolute-path example of the same idea).
+        // Paths are relative to the server working directory (Binaries/Win64).
+        // Each installation supplies its own untracked configuration.
         const Config config = load_config("ue4ss/Mods/OpenScumRconNative/config.ini");
 
         RC::Unreal::Hook::FCallbackOptions options{};
@@ -495,6 +381,7 @@ public:
         m_engine_tick_callback = RC::Unreal::Hook::RegisterEngineTickPreCallback(
                 [this](auto&, RC::Unreal::UEngine*, float, bool) {
                     drain_and_dispatch();
+                    openscumrcon::godmode_trace::tick();
                 }, options);
 
         // TEMPORARY diagnostic hook (2026-09-05): logs every UFunction call
@@ -521,6 +408,7 @@ public:
                     // specific function was chosen as the anchor.
                     if (function && function == m_admin_states_multicast_function)
                     {
+                        openscumrcon::godmode_trace::observe_effect(context);
                         log_admin_states_multicast_stack(context);
                     }
 
@@ -528,7 +416,7 @@ public:
                     {
                         return;
                     }
-                    std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_capture_nested.log", std::ios::app);
+                    std::ofstream file("openscumrcon_capture_nested.log", std::ios::app);
                     if (file.is_open())
                     {
                         const std::string contextName = context ? narrow(context->GetFullName()) : std::string{};
@@ -537,7 +425,59 @@ public:
                     }
                 }, captureOptions);
 
-        if (install_native_execute_hook())
+        // Observation-only hooks (2026-09-06): testing a hypothesis the user
+        // found researching how tools like this are typically built for
+        // Unreal games in general - that admin commands might be dispatched
+        // via the engine's OWN standard, well-documented console-command
+        // pipeline (UGameViewportClient::ProcessConsoleExec /
+        // UObject::CallFunctionByNameWithArguments) rather than SCUM's
+        // undocumented internal native chain this project spent most of
+        // today reverse-engineering. UE4SS already provides stable, proven
+        // hook points for both (the same mechanism already used safely for
+        // ProcessEvent above) - far lower risk than more raw PolyHook_2
+        // detours on guessed addresses. Purely logs; never changes behavior
+        // or a return value.
+        RC::Unreal::Hook::FCallbackOptions consoleExecOptions{};
+        consoleExecOptions.OwnerModName = ModName;
+        consoleExecOptions.HookName = STR("OpenScumRconObserveConsoleExec");
+        consoleExecOptions.bReadonly = true;
+        RC::Unreal::Hook::RegisterProcessConsoleExecCallback(
+                [](RC::Unreal::Hook::TCallbackIterationData<bool>&, RC::Unreal::UObject* context, const RC::CharType* cmd,
+                   RC::Unreal::FOutputDevice&, RC::Unreal::UObject* executor) {
+                    std::ofstream file("openscumrcon_console_exec.log", std::ios::app);
+                    if (file.is_open())
+                    {
+                        const std::string contextName = context ? narrow(context->GetFullName()) : std::string{};
+                        const std::string executorName = executor ? narrow(executor->GetFullName()) : std::string{};
+                        const std::string cmdText = cmd ? narrow(std::wstring(cmd)) : std::string{};
+                        file << "ProcessConsoleExec context=[" << contextName << "] executor=[" << executorName
+                             << "] cmd=[" << cmdText << "]\n";
+                    }
+                }, consoleExecOptions);
+
+        RC::Unreal::Hook::FCallbackOptions callByNameOptions{};
+        callByNameOptions.OwnerModName = ModName;
+        callByNameOptions.HookName = STR("OpenScumRconObserveCallFunctionByName");
+        callByNameOptions.bReadonly = true;
+        RC::Unreal::Hook::RegisterCallFunctionByNameWithArgumentsPreCallback(
+                [](RC::Unreal::Hook::TCallbackIterationData<bool>&, RC::Unreal::UObject* context, const RC::CharType* str,
+                   RC::Unreal::FOutputDevice&, RC::Unreal::UObject* executor, bool) {
+                    std::ofstream file("openscumrcon_callfunctionbyname.log", std::ios::app);
+                    if (file.is_open())
+                    {
+                        const std::string contextName = context ? narrow(context->GetFullName()) : std::string{};
+                        const std::string executorName = executor ? narrow(executor->GetFullName()) : std::string{};
+                        const std::string strText = str ? narrow(std::wstring(str)) : std::string{};
+                        file << "CallFunctionByNameWithArguments context=[" << contextName << "] executor=["
+                             << executorName << "] str=[" << strText << "]\n";
+                    }
+                }, callByNameOptions);
+
+        const bool godmode_trace_ready = openscumrcon::godmode_trace::initialize();
+        RC::Output::send<RC::LogLevel::Verbose>(STR("[OpenScumRconNative] GodMode trace v1 initialized={}\n"), godmode_trace_ready);
+        const bool native_godmode_ready = openscumrcon::godmode::initialize();
+        RC::Output::send<RC::LogLevel::Verbose>(STR("[OpenScumRconNative] Native GodMode dispatcher v2 (RCON authority) initialized={}\n"), native_godmode_ready);
+        if (openscumrcon::godmode_trace::supported_build() && install_native_execute_hook())
         {
             RC::Output::send<RC::LogLevel::Verbose>(STR("[OpenScumRconNative] Native execute() hook installed\n"));
         }
@@ -547,9 +487,10 @@ public:
                     STR("[OpenScumRconNative] Native execute() hook FAILED to install - "
                         "!native_capture_start/!dump_native_hook will not work, RCON listener unaffected\n"));
         }
-        if (install_registration_check_hook())
+        if (openscumrcon::godmode_trace::supported_build() && install_registration_check_hook())
         {
-            RC::Output::send<RC::LogLevel::Verbose>(STR("[OpenScumRconNative] Registration-check hook installed\n"));
+            openscumrcon::godmode_trace::set_interface_hook_available(true);
+            RC::Output::send<RC::LogLevel::Verbose>(STR("[OpenScumRconNative] GetInterfaceAddress observer installed\n"));
         }
         else
         {
@@ -578,6 +519,11 @@ private:
         for (auto& item : pending)
         {
             std::string response;
+            if (!openscumrcon::is_rcon_authorized(item.authority))
+            {
+                item.response.set_value("error: authenticated RCON connection required");
+                continue;
+            }
             try
             {
                 // Diagnostic sentinel (2026-09-05), not a real SCUM command -
@@ -585,7 +531,19 @@ private:
                 // instead of the normal dispatch path. See docs/research/
                 // 2026-09-05-authorization-gate-analysis.md for why. Checked
                 // before the '#' stripping/dispatch below on purpose.
-                if (item.command_text == "!dump_admin_permissions")
+                if (item.command_text == "!godmode_trace_start")
+                {
+                    response = openscumrcon::godmode_trace::start();
+                }
+                else if (item.command_text == "!godmode_trace_stop")
+                {
+                    response = openscumrcon::godmode_trace::stop();
+                }
+                else if (item.command_text == "!godmode_trace_status")
+                {
+                    response = openscumrcon::godmode_trace::status();
+                }
+                else if (item.command_text == "!dump_admin_permissions")
                 {
                     response = m_dispatch.dump_admin_command_permission_levels();
                 }
@@ -610,7 +568,7 @@ private:
                     // RCON), to see which function/object boundary a real
                     // admin command crosses. We are observing SCUM's own
                     // engine calls here, not Herbie's mod code.
-                    std::ofstream(  "C:\\PowelsLocalBridge\\openscumrcon_capture_nested.log", std::ios::trunc);
+                    std::ofstream(  "openscumrcon_capture_nested.log", std::ios::trunc);
                     m_capturing_calls.store(true, std::memory_order_relaxed);
                     response = "ok: capture started";
                 }
@@ -621,7 +579,7 @@ private:
                 }
                 else if (item.command_text == "!native_capture_start")
                 {
-                    std::ofstream("C:\\PowelsLocalBridge\\openscumrcon_native_hook.log", std::ios::trunc);
+                    std::ofstream("openscumrcon_native_hook.log", std::ios::trunc);
                     g_capturing_native_calls.store(true, std::memory_order_relaxed);
                     response = "ok: native capture started";
                 }
@@ -636,7 +594,8 @@ private:
                 }
                 else if (item.command_text == "!capture_registration_start")
                 {
-                    std::ofstream("C:\\PowelsLocalBridge\\openscumrcon_registration_calls.log", std::ios::trunc);
+                    std::ofstream("openscumrcon_registration_calls.log", std::ios::trunc);
+                    g_registration_log_count.store(0);
                     g_capturing_registration_calls.store(true, std::memory_order_relaxed);
                     response = "ok: registration capture started";
                 }
@@ -664,13 +623,13 @@ private:
                     }
                     else
                     {
-                        response = try_native_setgodmode(rest.substr(0, space), rest.substr(space + 1));
+                        response = "error: experimental call disabled: old address targets Immortality; use observation-only !godmode_trace_start";
                     }
                 }
                 else
                 {
                     m_capturing_calls.store(true, std::memory_order_relaxed);
-                    response = m_dispatch.dispatch_command(item.command_text);
+                    response = m_dispatch.dispatch_command(item.command_text, item.authority);
                     m_capturing_calls.store(false, std::memory_order_relaxed);
                 }
             }
@@ -701,7 +660,7 @@ private:
         void* frames[kMaxFrames]{};
         const USHORT captured = CaptureStackBackTrace(0, kMaxFrames, frames, nullptr);
 
-        std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_admin_states_stack.log", std::ios::app);
+        std::ofstream file("openscumrcon_admin_states_stack.log", std::ios::app);
         if (!file.is_open())
         {
             return;

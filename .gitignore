@@ -35,3 +35,23 @@ config.local.*
 *.user
 Thumbs.db
 .DS_Store
+
+# Deployment configuration and private runtime/research material
+config.ini
+*.local.ini
+*.log
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.dmp
+*.pcap
+*.pcapng
+*.zip
+*.backup
+/diagnostics/
+/private/
+/ServerSync/
+
+# Research captures stay in the private development checkout
+/docs/research/

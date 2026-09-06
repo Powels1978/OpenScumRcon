@@ -22,14 +22,10 @@ namespace openscumrcon
     {
         constexpr int RESPONSE_WAIT_TIMEOUT_SECONDS = 25;
 
-        // Temporary diagnostic logging while bringing the listener up for the
-        // first time against a live server - same file-append convention
-        // used elsewhere in this project (e.g. C:\PowelsLocalBridge\*.log).
-        // TODO: remove or gate behind a verbosity flag once the connection
-        // path is verified end-to-end.
+        // Diagnostic logs remain local to the server working directory.
         void debug_log(const std::string& message)
         {
-            std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_native_debug.log", std::ios::app);
+            std::ofstream file("openscumrcon_native_debug.log", std::ios::app);
             if (file.is_open())
             {
                 file << message << "\n";
@@ -149,7 +145,9 @@ namespace openscumrcon
                     continue;
                 }
 
-                std::future<std::string> response_future = queue.enqueue(command_packet.payload);
+                // This point is reachable only after this connection passed AUTH.
+                // The recipient player supplies context, never administrative authority.
+                std::future<std::string> response_future = queue.enqueue(command_packet.payload, CommandAuthority::authenticated_rcon);
                 std::string response_text;
                 if (response_future.wait_for(std::chrono::seconds(RESPONSE_WAIT_TIMEOUT_SECONDS))
                         == std::future_status::ready)

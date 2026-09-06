@@ -1,4 +1,5 @@
 #include "admin_dispatch.hpp"
+#include "godmode_dispatch.hpp"
 
 #include <cstdint>
 #include <fstream>
@@ -20,10 +21,7 @@ namespace openscumrcon
 {
     namespace
     {
-        // Same "skip the CDO / skip unreachable objects" guard pattern
-        // native_telemetry uses (added there after a real production crash
-        // traced to touching a stale/unreachable object - see the
-        // 2026-09-04 "DE-Main-Absturz" fix in the sibling private project).
+        // Skip default objects and unreachable instances during object discovery.
         bool is_default_object_name(UObject* object)
         {
             // CDOs are named "Default__<ClassName>"; cheaper than a dedicated
@@ -112,8 +110,11 @@ namespace openscumrcon
         return found ? found : fallback;
     }
 
-    std::string AdminDispatch::dispatch_command(const std::string& raw_command_text)
+    std::string AdminDispatch::dispatch_command(const std::string& raw_command_text, CommandAuthority authority)
     {
+        if (!is_rcon_authorized(authority)) return "error: authenticated RCON connection required";
+        if (auto reply = godmode::dispatch(raw_command_text, authority)) return *reply;
+
         if (!m_initialized)
         {
             return "error: AdminDispatch not initialized";
@@ -121,7 +122,7 @@ namespace openscumrcon
 
         std::string command_text = raw_command_text;
         // Trim and strip a leading '#', mirroring SourceRcon.run() in
-        // local_bridge/powels_local_bridge.py so behaviour matches what
+        // existing Source RCON clients so behaviour matches what
         // callers of the existing client already expect.
         const auto first = command_text.find_first_not_of(" \t\r\n");
         if (first == std::string::npos)
@@ -269,7 +270,7 @@ namespace openscumrcon
             return RC::LoopAction::Continue;
         });
 
-        std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_permission_levels.log", std::ios::trunc);
+        std::ofstream file("openscumrcon_permission_levels.log", std::ios::trunc);
         if (file.is_open())
         {
             file << log.str();
@@ -278,7 +279,7 @@ namespace openscumrcon
         std::ostringstream summary;
         summary << "ok: scanned " << objects_scanned
                 << " AdminCommand_* object(s), full property dump written to "
-                   "C:\\PowelsLocalBridge\\openscumrcon_permission_levels.log";
+                   "openscumrcon_permission_levels.log";
         return summary.str();
     }
 
@@ -342,7 +343,7 @@ namespace openscumrcon
             return RC::LoopAction::Continue;
         });
 
-        std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_rpc_channel_info.log", std::ios::trunc);
+        std::ofstream file("openscumrcon_rpc_channel_info.log", std::ios::trunc);
         if (file.is_open())
         {
             file << log.str();
@@ -351,7 +352,7 @@ namespace openscumrcon
         std::ostringstream summary;
         summary << "ok: found " << found << " PlayerRpcChannel instance(s), "
                 << "Chat_Server_ProcessAdminCommand=" << (m_chat_server_process_admin_command ? "resolved" : "NOT FOUND")
-                << ", details written to C:\\PowelsLocalBridge\\openscumrcon_rpc_channel_info.log";
+                << ", details written to openscumrcon_rpc_channel_info.log";
         return summary.str();
     }
 
