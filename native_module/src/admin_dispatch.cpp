@@ -48,23 +48,29 @@ namespace openscumrcon
 
     bool AdminDispatch::initialize()
     {
+        // Kept resolved only for the historical dump_test_process_admin_command_address()
+        // diagnostic (see docs/research/2026-09-05-authorization-gate-analysis.md,
+        // "Update 2026-09-06") - Test_ProcessAdminCommand itself is confirmed
+        // dead code and no longer gates initialization success.
         m_test_process_admin_command = UObjectGlobals::StaticFindObject<UFunction*>(
                 nullptr, nullptr, STR("/Script/SCUM.MiscStatics:Test_ProcessAdminCommand"));
-        m_misc_statics_cdo = UObjectGlobals::StaticFindObject<UObject*>(
-                nullptr, nullptr, STR("/Script/SCUM.Default__MiscStatics"));
         m_player_controller_class = UObjectGlobals::StaticFindObject<UClass*>(
                 nullptr, nullptr, STR("/Script/SCUM.ConZPlayerController"));
         m_game_instance_class = UObjectGlobals::StaticFindObject<UClass*>(
                 nullptr, nullptr, STR("/Script/SCUM.ConZGameInstance"));
+        m_player_rpc_channel_class = UObjectGlobals::StaticFindObject<UClass*>(
+                nullptr, nullptr, STR("/Script/SCUM.PlayerRpcChannel"));
+        m_chat_server_process_admin_command = UObjectGlobals::StaticFindObject<UFunction*>(
+                nullptr, nullptr, STR("/Script/SCUM.PlayerRpcChannel:Chat_Server_ProcessAdminCommand"));
 
-        if (!m_test_process_admin_command || !m_misc_statics_cdo || !m_player_controller_class)
+        if (!m_player_controller_class || !m_player_rpc_channel_class || !m_chat_server_process_admin_command)
         {
             RC::Output::send<RC::LogLevel::Error>(
                     STR("[OpenScumRcon] AdminDispatch::initialize failed - required SCUM objects not found "
-                        "(function={}, statics_cdo={}, player_controller_class={})\n"),
-                    static_cast<void*>(m_test_process_admin_command),
-                    static_cast<void*>(m_misc_statics_cdo),
-                    static_cast<void*>(m_player_controller_class));
+                        "(player_controller_class={}, player_rpc_channel_class={}, chat_server_process_admin_command={})\n"),
+                    static_cast<void*>(m_player_controller_class),
+                    static_cast<void*>(m_player_rpc_channel_class),
+                    static_cast<void*>(m_chat_server_process_admin_command));
             return false;
         }
 
@@ -130,30 +136,70 @@ namespace openscumrcon
         const auto last = command_text.find_last_not_of(" \t\r\n");
         command_text = command_text.substr(0, last + 1);
 
-        UObject* context_object = find_admin_context_object();
-        if (!context_object)
+        if (!m_chat_server_process_admin_command)
         {
-            return "error: no valid WorldContextObject found (no player online, no GameInstance)";
+            return "error: Chat_Server_ProcessAdminCommand not resolved (see UE4SS.log at startup)";
         }
 
+        UObject* context_object = find_admin_context_object();
+        if (!context_object || !context_object->IsA(m_player_controller_class))
+        {
+            // Test_ProcessAdminCommand's GameInstance fallback is gone along
+            // with that dead code path - Chat_Server_ProcessAdminCommand only
+            // exists on a connected player's own PlayerRpcChannel component,
+            // so without a real PlayerController there is nothing to call.
+            return "error: no connected player found (Chat_Server_ProcessAdminCommand needs a real PlayerController)";
+        }
+
+        // PlayerRpcChannel is a default subobject (component), not exposed
+        // through a plain named UPROPERTY reference on ConZPlayerController
+        // (confirmed 2026-09-06: GetPropertyByName(STR("PlayerRpcChannel"))
+        // returns nullptr) - find the live instance by matching its Outer to
+        // our chosen PlayerController instead. Cheap: IsA() first (pointer-
+        // chain walk), pointer comparison second, no string work per object -
+        // same safe pattern as dump_player_rpc_channel_info().
+        UObject* rpc_channel = nullptr;
+        if (m_player_rpc_channel_class)
+        {
+            UObjectGlobals::ForEachUObject([&](UObject* object, ...) -> RC::LoopAction {
+                if (!object || object->IsUnreachable())
+                {
+                    return RC::LoopAction::Continue;
+                }
+                if (object->IsA(m_player_rpc_channel_class) && object->GetOuterPrivate() == context_object)
+                {
+                    rpc_channel = object;
+                    return RC::LoopAction::Break;
+                }
+                return RC::LoopAction::Continue;
+            });
+        }
+        if (!rpc_channel)
+        {
+            return "error: no PlayerRpcChannel component found on this PlayerController";
+        }
+
+        // Chat_Server_ProcessAdminCommand is the handler for a real player's
+        // raw chat message - it almost certainly expects the same text the
+        // in-game chat box would send, leading '#' included (unlike the dead
+        // Test_ProcessAdminCommand path, which took a pre-stripped command).
+        // First attempt (2026-09-06) sent the stripped text and completed
+        // without error but with no visible effect - untested hypothesis:
+        // the handler silently no-ops on anything not starting with '#'.
         struct Params
         {
-            UObject* WorldContextObject{};
             FString commandText{};
         } params;
-        params.WorldContextObject = context_object;
-        params.commandText = FString(RC::to_wstring(command_text));
+        params.commandText = FString(RC::to_wstring("#" + command_text));
 
-        context_object->ProcessEvent(m_test_process_admin_command, &params);
+        rpc_channel->ProcessEvent(m_chat_server_process_admin_command, &params);
 
-        // See the header comment and docs/ARCHITECTURE.md: the real
-        // response text (what Herbie's RCON returns, e.g.
-        // "God mode set to true.") is not known to come back through this
-        // call at all - Herbie's own log shows he captures it via a
-        // separate chat-line detour hook, not a return value. Until that is
-        // solved, report only whether the call itself completed.
-        return "ok: dispatched via " + std::string(context_object->IsA(m_player_controller_class)
-                ? "PlayerController" : "GameInstance (fallback, known to not apply real effects)");
+        // See docs/ARCHITECTURE.md: the real response text (what Herbie's
+        // RCON returns, e.g. "God mode set to true.") is not known to come
+        // back through this call at all - Herbie's own log shows he captures
+        // it via a separate chat-line detour hook, not a return value. Until
+        // that is solved, report only whether the call itself completed.
+        return "ok: dispatched via PlayerRpcChannel::Chat_Server_ProcessAdminCommand";
     }
 
     std::string AdminDispatch::dump_admin_command_permission_levels() const
@@ -246,6 +292,84 @@ namespace openscumrcon
         std::ostringstream out;
         out << "ok: Test_ProcessAdminCommand native func ptr = 0x" << std::hex
             << reinterpret_cast<std::uintptr_t>(func_ptr);
+        return out.str();
+    }
+
+    std::string AdminDispatch::dump_player_rpc_channel_info() const
+    {
+        if (!m_player_rpc_channel_class)
+        {
+            return "error: PlayerRpcChannel UClass not resolved (see UE4SS.log at startup)";
+        }
+
+        std::size_t found = 0;
+        std::ostringstream log;
+
+        UObjectGlobals::ForEachUObject([&](UObject* object, ...) -> RC::LoopAction {
+            if (!object || object->IsUnreachable())
+            {
+                return RC::LoopAction::Continue;
+            }
+            // Cheap pointer-chain check FIRST, before any string work - the
+            // 2026-09-05 permission-level scan stalled the game thread by
+            // calling GetFullName() on every single UObject before filtering.
+            // IsA() only walks the class hierarchy, no string ops, so this is
+            // safe to run over the entire UObject universe.
+            if (!object->IsA(m_player_rpc_channel_class))
+            {
+                return RC::LoopAction::Continue;
+            }
+            ++found;
+            log << narrow(object->GetFullName()) << "\n";
+
+            UClass* object_class = object->GetClassPrivate();
+            if (!object_class)
+            {
+                log << "  <no UClass>\n";
+                return RC::LoopAction::Continue;
+            }
+            for (FProperty* property : TFieldRange<FProperty>(object_class))
+            {
+                if (!property)
+                {
+                    continue;
+                }
+                log << "  " << narrow(property->GetName())
+                    << " type=" << narrow(property->GetClass().GetName())
+                    << " offset=" << property->GetOffset_ForInternal()
+                    << " size=" << property->GetElementSize() << "\n";
+            }
+            return RC::LoopAction::Continue;
+        });
+
+        std::ofstream file("C:\\PowelsLocalBridge\\openscumrcon_rpc_channel_info.log", std::ios::trunc);
+        if (file.is_open())
+        {
+            file << log.str();
+        }
+
+        std::ostringstream summary;
+        summary << "ok: found " << found << " PlayerRpcChannel instance(s), "
+                << "Chat_Server_ProcessAdminCommand=" << (m_chat_server_process_admin_command ? "resolved" : "NOT FOUND")
+                << ", details written to C:\\PowelsLocalBridge\\openscumrcon_rpc_channel_info.log";
+        return summary.str();
+    }
+
+    std::string AdminDispatch::dump_chat_server_function_flags() const
+    {
+        if (!m_chat_server_process_admin_command)
+        {
+            return "error: Chat_Server_ProcessAdminCommand not resolved";
+        }
+        const auto flags = m_chat_server_process_admin_command->GetFunctionFlags();
+        std::ostringstream out;
+        out << "ok: flags=0x" << std::hex << flags << std::dec
+            << " Net=" << ((flags & FUNC_Net) != 0)
+            << " NetServer=" << ((flags & FUNC_NetServer) != 0)
+            << " NetReliable=" << ((flags & FUNC_NetReliable) != 0)
+            << " NetValidate=" << ((flags & FUNC_NetValidate) != 0)
+            << " Native=" << ((flags & FUNC_Native) != 0)
+            << " BlueprintCallable=" << ((flags & FUNC_BlueprintCallable) != 0);
         return out.str();
     }
 }

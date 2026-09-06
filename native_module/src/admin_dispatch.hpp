@@ -1,24 +1,29 @@
 #pragma once
 
-// Resolves and calls SCUM's admin-command entry point found during the
-// reverse-engineering phase (see docs/ARCHITECTURE.md, "Gefundener
-// Dispatch-Mechanismus" and its correction below it):
+// Resolves and calls SCUM's admin-command entry point.
 //
-//   UMiscStatics::Test_ProcessAdminCommand(UObject* WorldContextObject, FString commandText)
+// HISTORY: originally targeted UMiscStatics::Test_ProcessAdminCommand
+// (UObject* WorldContextObject, FString commandText) - a Blueprint-callable
+// static helper found during the initial reflection scan. Confirmed via
+// disassembly on 2026-09-06 to be an empty stub (a single `ret` instruction)
+// in the Shipping build - it does nothing at all, regardless of arguments or
+// authorization. See docs/research/2026-09-05-authorization-gate-analysis.md,
+// "Update 2026-09-06", and docs/ARCHITECTURE.md.
 //
-// KNOWN, VERIFIED LIMITATION (2026-09-04 live A/B test against a real
-// server): calling this with the GameInstance as WorldContextObject runs
-// without error but has NO observable effect - the same command sent via
-// Herbie's still-working RCON on the same server, same target, same moment,
-// DID work. Working theory: the function checks the caller's admin identity
-// through WorldContextObject, and a bare GameInstance carries none.
+// CURRENT APPROACH (2026-09-06): call the real production RPC instead -
 //
-// This module now resolves a REAL, currently-connected ConZPlayerController
-// instead and uses that as WorldContextObject - untested as of this
-// writing (no live server access when this was written; verify with the
-// user before trusting the result). If that still doesn't work, the
-// documented fallback is memory-hooking the actual authorization gate(s),
-// not a reflection-only call.
+//   UPlayerRpcChannel::Chat_Server_ProcessAdminCommand(FString commandText)
+//
+// - the same entry point a connected admin's own "#command" chat message
+// triggers. PlayerRpcChannel is a UActorComponent attached to
+// ConZPlayerController (default subobject named "PlayerRpcChannel"); the
+// live instance is fetched via the connected player's PlayerController
+// (find_admin_context_object()) rather than a fresh UObject scan, since a
+// scan can't distinguish which of several connected players' channels to
+// use. Server RPCs called via ProcessEvent from code that already has
+// server authority execute their _Implementation directly (no actual
+// network round-trip) - this module runs inside the dedicated server
+// process, so that should apply here.
 
 #include <string>
 
@@ -75,15 +80,37 @@ namespace openscumrcon
         // risk like dump_admin_command_permission_levels() had.
         std::string dump_test_process_admin_command_address() const;
 
+        // Diagnostic (2026-09-06): Test_ProcessAdminCommand was confirmed to
+        // be an empty stub in the Shipping build (see docs/research/
+        // 2026-09-05-authorization-gate-analysis.md, "Update 2026-09-06") -
+        // new focus is UPlayerRpcChannel::Chat_Server_ProcessAdminCommand,
+        // the real path a connected admin's chat "#command" already uses.
+        // This finds live PlayerRpcChannel instances (IsA-filtered, cheap -
+        // no repeat of the earlier full-UObject GetFullName() stall) and
+        // dumps their reflected properties, to figure out how such an
+        // instance relates to a specific connected player/PlayerController
+        // before attempting to call the RPC on it.
+        std::string dump_player_rpc_channel_info() const;
+
+        // Diagnostic (2026-09-06): reports EFunctionFlags bits relevant to
+        // RPC dispatch (FUNC_Net/NetServer/NetReliable/NetValidate) on
+        // Chat_Server_ProcessAdminCommand. A first call attempt completed
+        // without error but had no visible effect - this checks whether the
+        // function is actually a Server RPC at all (which would mean
+        // ProcessEvent's net-dispatch logic, not our call itself, decides
+        // whether the implementation runs).
+        std::string dump_chat_server_function_flags() const;
+
         bool is_initialized() const { return m_initialized; }
 
     private:
         RC::Unreal::UObject* find_admin_context_object() const;
 
         RC::Unreal::UFunction* m_test_process_admin_command = nullptr;
-        RC::Unreal::UObject* m_misc_statics_cdo = nullptr;
         RC::Unreal::UClass* m_player_controller_class = nullptr;
         RC::Unreal::UClass* m_game_instance_class = nullptr;
+        RC::Unreal::UClass* m_player_rpc_channel_class = nullptr;
+        RC::Unreal::UFunction* m_chat_server_process_admin_command = nullptr;
         bool m_initialized = false;
     };
 }

@@ -19,12 +19,14 @@ client. This project rebuilds the same functionality independently.
 
 **Early development, builds and runs, dispatch mechanism under revision.** A
 real Source RCON listener and worker-thread/game-thread command queue are
-implemented and working. The originally planned dispatch path,
-`Test_ProcessAdminCommand`, was confirmed via disassembly to be an empty stub
-in the Shipping build (a single `ret` instruction — it does nothing at
-runtime, regardless of authorization or arguments) and has been abandoned.
-Current focus: `PlayerRpcChannel::Chat_Server_ProcessAdminCommand`, the actual
-path real admin players already use. See
+implemented and working. Two reflection-based dispatch paths were tried and
+ruled out: `Test_ProcessAdminCommand` (confirmed via disassembly to be an
+empty stub in the Shipping build) and `PlayerRpcChannel::Chat_Server_ProcessAdminCommand`
+(runs without error but has no effect — confirmed by capturing every function
+call during a real, working admin command triggered via the still-functional
+Herbie RCON: it uses no reflected function at all). Current focus: calling
+the native `AdminCommandRegistry`/`AdminCommandExecutor` machinery directly
+(not through Unreal's reflection system). See
 [`docs/CHANGELOG.md`](docs/CHANGELOG.md) for the full, warts-and-all
 investigation history and [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for
 the technical approach.
@@ -81,14 +83,17 @@ auszulösen. Dieses Projekt baut dieselbe Funktionalität unabhängig nach.
 **Frühe Entwicklung, baut und läuft, Dispatch-Mechanismus wird gerade neu
 ausgerichtet.** Ein echter Source-RCON-Listener und die
 Worker-Thread/Game-Thread-Befehls-Queue sind implementiert und funktionieren.
-Der ursprünglich geplante Dispatch-Weg, `Test_ProcessAdminCommand`, wurde per
-Disassemblierung als leere Stub-Funktion im Shipping-Build entlarvt (nur ein
-einzelnes `ret` — sie tut zur Laufzeit nichts, unabhängig von Berechtigung
-oder Argumenten) und wurde verworfen. Aktueller Fokus:
-`PlayerRpcChannel::Chat_Server_ProcessAdminCommand`, der tatsächliche Pfad,
-den echte Admin-Spieler bereits nutzen. Die volle, ungeschönte
-Untersuchungshistorie steht in [`docs/CHANGELOG.md`](docs/CHANGELOG.md), die
-technische Umsetzung in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Zwei Reflection-basierte Dispatch-Wege wurden ausprobiert und verworfen:
+`Test_ProcessAdminCommand` (per Disassemblierung als leere Stub-Funktion im
+Shipping-Build entlarvt) und `PlayerRpcChannel::Chat_Server_ProcessAdminCommand`
+(läuft fehlerfrei, aber wirkungslos — bestätigt durch Mitschneiden aller
+Funktionsaufrufe während eines echten, über Herbies noch funktionierendes
+RCON ausgelösten Admin-Befehls: der nutzt gar keine reflektierte Funktion).
+Aktueller Fokus: die native `AdminCommandRegistry`/`AdminCommandExecutor`-
+Maschinerie direkt aufrufen, nicht über Unreals Reflection-System. Die volle,
+ungeschönte Untersuchungshistorie steht in
+[`docs/CHANGELOG.md`](docs/CHANGELOG.md), die technische Umsetzung in
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ### Wie es funktionieren soll
 

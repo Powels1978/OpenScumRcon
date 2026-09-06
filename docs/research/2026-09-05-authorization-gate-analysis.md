@@ -319,29 +319,112 @@ regulär nutzt) muss also der neue Fokus werden — dieser darf, da er real
 im laufenden Spielbetrieb verwendet wird, nicht ebenfalls eine leere
 Shipping-Stub sein.
 
-## Noch offen (nächster Schritt)
+## Update 2026-09-06 (Folgesession): Chat_Server_ProcessAdminCommand ausprobiert — ohne Wirkung; ProcessEvent-Capture während Herbies Aufruf zeigt: kein reflektierter Trigger
 
-- Berechtigungsstufen-Byte (`+0x52`) für `SetGodMode` und andere Zielkommandos
-  zur Laufzeit auslesen (siehe "Praktische Konsequenz" oben) — falls es bereits
-  `0` ist, sollte der native Aufruf ohne jede weitere Änderung funktionieren und
-  das eigentliche Problem läge woanders (z. B. in der stillen Vtable-Prüfung
-  `[RSI-Vtable][+0x278]` aus Funktion A, die VOR `0x141A45AA0` liegt und bei
-  `false` ganz ohne Meldung abbricht — das wäre dann der nächste Verdächtige).
-- Falls die Stufe >0 ist: klären, ob `Executor+0x690` bei unserem synthetischen
-  Aufruf überhaupt ein sinnvolles/nicht-null Objekt ist (Crash-Risiko beachten,
-  falls `Executor` selbst schon ungültig ist — vorsichtig per Reflection
-  inspizieren, nicht blind dereferenzieren).
+Nachdem `Test_ProcessAdminCommand` als toter Code entlarvt wurde (siehe oben), wurde
+`UPlayerRpcChannel::Chat_Server_ProcessAdminCommand(FString commandText)` als neuer
+Kandidat umgesetzt:
+
+1. Per Reflection bestätigt: `PlayerRpcChannel` ist eine `UActorComponent`, als
+   Default-Subobjekt an `ConZPlayerController` gehängt (`_isEnabled`-artige
+   Properties fehlen hier, stattdessen klassische `UActorComponent`-Felder wie
+   `PrimaryComponentTick`). Die reflektierte Funktion `Chat_Server_ProcessAdminCommand`
+   existiert und wurde aufgelöst.
+2. **Wichtig**: Es gibt **keine** benannte `UPROPERTY`-Referenz "PlayerRpcChannel" auf
+   `ConZPlayerController` selbst (`GetPropertyByName` liefert `nullptr`) — die
+   Komponente muss über ihren `Outer` (= die besitzende `PlayerController`-Instanz)
+   gefunden werden, nicht über ein Property.
+3. Aufruf über `rpc_channel->ProcessEvent(Chat_Server_ProcessAdminCommand, &params)`
+   mit `commandText = "#SetGodMode true <steamId>"` (mit führendem `#`, da diese
+   Funktion vermutlich den rohen Chat-Text erwartet) **lief fehlerfrei durch, hatte
+   aber erneut keine sichtbare Wirkung** — bestätigt durch den Nutzer live im Spiel.
+
+### Entscheidender Test: ProcessEvent-Capture während eines ECHTEN Herbie-Aufrufs
+
+Um endgültig zu klären, ob SCUM für echte Admin-Befehle überhaupt eine reflektierte
+`UFunction` durchläuft, wurde der bereits vorhandene `ProcessEvent`-Capture-Hook
+(bisher nur während der eigenen `dispatch_command()`-Aufrufe aktiv) um zwei manuelle
+RCON-Sentinels erweitert: `!capture_start` / `!capture_stop`. Ablauf:
+
+1. `!capture_start` über unser eigenes RCON gesendet.
+2. **Während die Aufzeichnung läuft**, `SetGodMode true <steamId>` über Herbies noch
+   funktionierendes RCON ausgelöst (per `local_bridge`-HTTP-API) — Herbie meldete
+   `"God mode set to true."`, der Nutzer bestätigte den sichtbaren Effekt im Spiel.
+3. `!capture_stop`, Log geholt (40996 Zeilen / ~10,9 MB Rohdaten — auf eindeutige
+   Funktionsnamen reduzierte Fassung:
+   [`capture_log_setgodmode_via_herbie_2026-09-06_filtered.txt`](capture_log_setgodmode_via_herbie_2026-09-06_filtered.txt)).
+
+**Ergebnis**: In keiner der ~41.000 aufgezeichneten `ProcessEvent`-Aufrufe (inkl.
+sämtlicher Animations-/Tick-/Bewegungs-Funktionen, die in diesem Fenster liefen)
+taucht auch nur ein einziger Treffer für `RpcChannel`, `AdminCommand`, `Chat_Server`
+oder `GodMode` auf. **Herbies RCON löst den eigentlichen Befehl nachweislich NICHT
+über eine reflektierte `UFunction`/`ProcessEvent` aus** — sonst müsste er in dieser
+lückenlosen Aufzeichnung erscheinen.
+
+Einziger relevanter Treffer im gesamten Fenster: `Prisoner:NetMulticast_UpdateAdminStates`
+(genau 1× aufgerufen) — mit hoher Wahrscheinlichkeit die Multicast-RPC, die den
+**bereits intern geänderten** Zustand an die Clients repliziert. Das ist die
+*Folge* der eigentlichen Zustandsänderung, nicht deren Auslöser — aber ein
+nützlicher, reflektierter Anker, um eine erfolgreiche Zustandsänderung künftig zu
+erkennen/verifizieren (z. B. per Hook), unabhängig davon, wie der Befehl selbst
+ausgelöst wird.
+
+### Bedeutung
+
+Damit ist ziemlich sicher: der eigentliche Befehls-Trigger ist **reiner, nicht
+reflektierter nativer C++-Code** — Herbie ruft vermutlich eine per Adressauflösung
+(AOB-Scan o. ä.) gefundene native Funktion (am ehesten etwas in Richtung
+`AdminCommandRegistry`/`AdminCommandExecutor::Execute`, siehe die ursprüngliche
+Analyse ganz oben in diesem Dokument) direkt über ihren Funktionszeiger auf,
+**ohne** den Umweg über Unreals Reflection-/RPC-System. Das widerspricht nicht
+zwingend seiner eigenen Aussage, keine "Memory Injection" zu betreiben (im Sinne
+von: keinen neuen Code in den Prozess schreiben) — ein direkter Aufruf einer
+bereits vorhandenen nativen Funktion über ihre aufgelöste Adresse ist technisch
+etwas anderes als Code-Injektion, auch wenn beides "in-process" passiert.
+
+**Konsequenz für die Architektur**: Der rein reflection-basierte Ansatz
+(`ProcessEvent` auf eine gefundene `UFunction`) ist damit als Sackgasse zu
+betrachten — nicht nur `Test_ProcessAdminCommand` (toter Stub), sondern auch der
+vermeintlich "echte" `Chat_Server_ProcessAdminCommand`-Pfad zeigt keine Wirkung,
+weil offenbar *keiner* der reflektierten Pfade tatsächlich verwendet wird, wenn
+ein echter Admin einen Befehl auslöst. Der einzige verbleibende, durch diese
+Session nicht widerlegte Weg ist der ursprünglich befürchtete: die
+Autorisierungskette selbst nativ aufzurufen bzw. zu hooken (siehe die
+Disassemblierung von `0x1418c7b60`/`0x141A45AA0` weiter oben) — vermutlich über
+`AdminCommandRegistry`, dessen Instanz über `ConZGameInstance._adminCommandRegistry`
+bereits bekannt ist.
+
+## Noch offen (nächster Schritt) — Stand 2026-09-06
+
+Durch den ProcessEvent-Capture-Test (siehe Update 2026-09-06 oben) ist jetzt
+klar: **kein rein reflection-basierter Ansatz wird zum Ziel führen**, egal
+welche `UFunction` wir aufrufen — Herbies eigener, nachweislich funktionierender
+Aufruf durchläuft selbst keine einzige reflektierte Funktion für den Trigger.
+Der nächste Schritt ist damit zwingend der native Weg:
+
+- `AdminCommandRegistry`-Instanz über `ConZGameInstance._adminCommandRegistry`
+  auflösen (bereits in einer früheren Session bestätigt erreichbar), darin das
+  passende `AdminCommand_SetGodMode`-Objekt aus dem `_commands`-Array finden.
+- Herausfinden, wie die native `Execute()`/`CanExecute()`-Kette (Funktion A,
+  `0x1418c7b60`, siehe ganz oben) tatsächlich aufgerufen wird — vermutlich über
+  eine weitere, bisher nicht gefundene Einstiegsfunktion auf
+  `AdminCommandExecutor` oder `AdminCommandsStatics`, die den "Executor"
+  (`RDX`/`R15` in Funktion A) korrekt aus einem `ConZPlayerController`
+  konstruiert. Diese Einstiegsfunktion selbst nativ aufrufen (Funktionszeiger,
+  korrekte x64-Calling-Convention emulieren) statt sie zu reflektieren.
 - Die Helper-Funktionen `0x1426F00C0` (Registrierungscheck vor dem
   Vtable-Gate), `0x141A4A7E0`/`0x1412D59C0` (Set-Lookup-Hilfsfunktionen) und
-  `0x142AF9AE0`/`0x141F24E20`/`0x141A2C770` (Stufe-3/4-Helfer) sind bisher nur
-  aus ihrem Aufrufkontext heraus interpretiert, nicht selbst disassembliert —
-  bei Bedarf mit demselben `dumpFunctionAt()`-Mechanismus nachholbar.
-- Sobald klar ist, warum unser Aufruf tatsächlich scheitert: entweder (a) einen
-  Weg finden, einen validen Executor synthetisch zu erzeugen bzw. ein Kommando
-  mit Stufe 0 zu nutzen, oder (b) einen In-Memory-Hook auf `0x141A45AA0` selbst
-  setzen, der für unsere eigenen Aufrufe `true` erzwingt (das klassische, von
-  DeveloperMode konzeptionell beschriebene Vorgehen — hier aber eigenständig
-  anhand unserer eigenen Analyse gefunden, nicht von dort übernommen).
+  `0x142AF9AE0`/`0x141A2C770` (Stufe-3/4-Helfer) sind bisher nur aus ihrem
+  Aufrufkontext heraus interpretiert, nicht selbst disassembliert — bei Bedarf
+  mit demselben `dumpFunctionAt()`-Mechanismus nachholbar.
+- `Prisoner:NetMulticast_UpdateAdminStates` als reflektierten Erfolgs-Anker im
+  Hinterkopf behalten (per Hook beobachtbar, um zu verifizieren, ob ein eigener
+  nativer Aufruf tatsächlich einen Zustand geändert hat).
+- Damit rückt der ursprünglich befürchtete, aufwendigere Weg (nativer
+  Funktionsaufruf statt Reflection, eigenständig per Disassemblierung
+  gefunden — nicht von `DeveloperMode` übernommen) wieder in den Fokus. Ein
+  In-Memory-Hook auf `0x141A45AA0` bleibt eine mögliche Fallback-Option, falls
+  der direkte native Aufruf der Einstiegsfunktion nicht gelingt.
 
 ## Werkzeug
 

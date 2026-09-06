@@ -1,0 +1,37 @@
+# Gefilterte Zusammenfassung: ProcessEvent-Capture waehrend Herbies 'SetGodMode true' (2026-09-06)
+# Rohdaten: 40996 Zeilen / 10957448 Bytes, hier auf eindeutige Funktionsnamen reduziert
+# (Animations-Rauschen wie BlueprintUpdateAnimation/AnimSingleNodeInstance ausgefiltert).
+# Format: <Anzahl Aufrufe im Capture-Fenster> <voller Funktionsname>
+
+   9936 Function /Game/ConZ_Files/Blueprints/Lights/BPMasterLamp/MBP_Apex_Lamp_Rotating_SpotLight.MBP_Apex_Lamp_Rotating_SpotLight_C:ReceiveTick
+   6292 Function /Script/SCUM.Zombie2:GetHealth
+   6292 Function /Script/SCUM.ConZCharacter:IsAlive
+   4968 Function /Script/SCUM.InteractableInterface:IsWithinReachForInteraction
+   3312 Function /Game/ConZ_Files/Blueprints/Lights/BPMasterLamp/MBP_Lamp_Rotating_SpotLight.MBP_Lamp_Rotating_SpotLight_C:ReceiveTick
+   1380 Function /Game/ConZ_Files/Models/Buildings/Halloween/Catacombs/Props/BP_CatacombsChandelierCandles.BP_CatacombsChandelierCandles_C:CandleFlicker__UpdateFunc
+    828 Function /Game/ConZ_Files/BaseBuilding/Core/BP_ConZBase.BP_ConZBase_C:ReceiveTick
+    552 Function /Script/Engine.CameraModifier:BlueprintModifyPostProcess
+    552 Function /Script/Engine.CameraModifier:BlueprintModifyCamera
+    276 Function /Script/Engine.GameMode:ReadyToEndMatch
+    276 Function /Game/ConZ_Files/Maps/The_Island/Landscape_A_1_4.Landscape_A_C:ReceiveTick
+    276 Function /Game/ConZ_Files/Maps/The_Island/Landscape_A_1_3.Landscape_A_C:ReceiveTick
+    276 Function /Game/ConZ_Files/Maps/The_Island/Landscape_A_1_2.Landscape_A_C:ReceiveTick
+    276 Function /Game/ConZ_Files/Maps/The_Island/Landscape_A_1_1.Landscape_A_C:ReceiveTick
+    197 Function /Script/SCUM.Prisoner:OnMovementUpdated
+    197 Function /Script/Engine.Character:ServerMovePacked
+    170 Function /Script/SCUM.PlaceableActorBase:Server_UpdateState
+     80 Function /Script/Engine.Character:ClientMoveResponsePacked
+     36 Function /Script/SCUM.ConZPlayerController:GetUserId
+     19 Function /Script/SCUM.ConZPlayerController:GetUserProfileId
+     19 Function /Script/Engine.Actor:K2_GetActorLocation
+     17 Function /Script/SCUM.WeatherController2:NetMulticast_SendStateSnapshot
+     17 Function /Script/SCUM.Prisoner:Server_SetPackedShade
+     16 Function /Script/Engine.Pawn:GetController
+     15 Function /Script/SCUM.ConZPlayerController:Server_HeartbeatResponse
+     15 Function /Script/SCUM.ConZPlayerController:Client_HeartbeatRequest
+      8 Function /Script/SCUM.PrisonerUIStatics:GetPrisonerHealthRatio
+      1 Function /Script/SCUM.Prisoner:NetMulticast_UpdateAdminStates
+      1 Function /Script/SCUM.ConZPlayerController:Client_SaveState
+      1 Function /Script/SCUM.ConZGameState:SendServerTime
+      1 Function /Script/BattlEye.BattlEyeCommsComponent:Server_SendMessageToServer
+      1 Function /Script/BattlEye.BattlEyeCommsComponent:Client_SendMessageToClient

@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-09-06 (Folgesession) — Chat_Server_ProcessAdminCommand ebenfalls wirkungslos; ProcessEvent-Capture beweist: Herbie nutzt keine Reflection zum Triggern
+
+Direkte Fortsetzung. `PlayerRpcChannel::Chat_Server_ProcessAdminCommand` wurde
+als Ersatz für den verworfenen `Test_ProcessAdminCommand`-Pfad implementiert:
+
+- `PlayerRpcChannel` als `UActorComponent`-Default-Subobjekt auf
+  `ConZPlayerController` identifiziert (per Reflection, keine benannte
+  Property-Referenz vorhanden — Zugriff über `Outer`-Vergleich).
+- Aufruf mit `"#SetGodMode true <steamId>"` (führendes `#` ergänzt, da diese
+  Funktion vermutlich rohen Chat-Text erwartet) lief fehlerfrei durch —
+  **erneut ohne sichtbare Wirkung**, vom Nutzer live im Spiel bestätigt.
+
+Um endgültig zu klären, ob SCUM für echte Admin-Befehle überhaupt eine
+reflektierte Funktion durchläuft, wurde der ProcessEvent-Capture-Hook um
+manuelle RCON-Sentinels (`!capture_start`/`!capture_stop`) erweitert und
+während eines ECHTEN, über Herbies noch funktionierendes RCON ausgelösten
+`SetGodMode true` mitgeschnitten (~41.000 Aufrufe im Fenster).
+
+**Ergebnis**: Kein einziger Treffer für `RpcChannel`, `AdminCommand`,
+`Chat_Server` oder `GodMode` in der kompletten Aufzeichnung.
+**Herbies RCON löst den eigentlichen Befehl nachweislich nicht über eine
+reflektierte UFunction aus** — der Trigger muss reiner, nicht reflektierter
+nativer C++-Aufruf sein (vermutlich über eine per Adressauflösung gefundene
+Funktion auf `AdminCommandRegistry`/`AdminCommandExecutor`, direkt über
+Funktionszeiger aufgerufen, ohne Unreals RPC-/Reflection-System). Einziger
+Treffer im Fenster: `Prisoner:NetMulticast_UpdateAdminStates` (1×) — die
+Multicast-Replikation des bereits geänderten Zustands, nicht dessen Auslöser,
+aber ein nützlicher Anker zur künftigen Erfolgsverifikation.
+
+**Konsequenz**: Reflection-basierte Dispatch-Versuche sind damit als Sackgasse
+einzustufen. Nächster Schritt: den nativen Aufrufweg über
+`AdminCommandRegistry`/`AdminCommandExecutor` finden und direkt (nicht via
+Reflection) aufrufen — der ursprünglich befürchtete, aufwendigere Ansatz.
+
+Details: [`docs/research/2026-09-05-authorization-gate-analysis.md`](research/2026-09-05-authorization-gate-analysis.md).
+
 ## 2026-09-06 — Durchbruch: Test_ProcessAdminCommand ist im Shipping-Build eine leere Stub-Funktion
 
 Direkte Fortsetzung der letzten Session. Die native Implementierung hinter

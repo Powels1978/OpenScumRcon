@@ -193,6 +193,32 @@ private:
                 {
                     response = m_dispatch.dump_test_process_admin_command_address();
                 }
+                else if (item.command_text == "!dump_rpc_channel")
+                {
+                    response = m_dispatch.dump_player_rpc_channel_info();
+                }
+                else if (item.command_text == "!dump_chat_flags")
+                {
+                    response = m_dispatch.dump_chat_server_function_flags();
+                }
+                else if (item.command_text == "!capture_start")
+                {
+                    // Manual on/off (2026-09-06), independent of our own
+                    // dispatch_command() calls - lets us capture what SCUM's
+                    // own ProcessEvent traffic looks like while a command is
+                    // triggered externally (e.g. via Herbie's still-working
+                    // RCON), to see which function/object boundary a real
+                    // admin command crosses. We are observing SCUM's own
+                    // engine calls here, not Herbie's mod code.
+                    std::ofstream(  "C:\\PowelsLocalBridge\\openscumrcon_capture_nested.log", std::ios::trunc);
+                    m_capturing_calls.store(true, std::memory_order_relaxed);
+                    response = "ok: capture started";
+                }
+                else if (item.command_text == "!capture_stop")
+                {
+                    m_capturing_calls.store(false, std::memory_order_relaxed);
+                    response = "ok: capture stopped";
+                }
                 else
                 {
                     m_capturing_calls.store(true, std::memory_order_relaxed);

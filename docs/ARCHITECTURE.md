@@ -93,7 +93,15 @@ JETZT nur aus einem einzelnen `ret`-Byte — sie tut nichts.** Kein
 Autorisierungsproblem, kein Executor-Auflösungsproblem, einfach eine leere
 Funktion. Dieser gesamte Abschnitt (der ursprünglich als Lösung galt) ist damit
 als Sackgasse einzustufen und wird nur aus Transparenzgründen nicht gelöscht.
-Der neue Fokus ist `PlayerRpcChannel::Chat_Server_ProcessAdminCommand`.
+Der neue Fokus war `PlayerRpcChannel::Chat_Server_ProcessAdminCommand` —
+**Update 2026-09-06**: auch dieser Weg zeigte keine Wirkung, und ein
+ProcessEvent-Capture während eines echten, über Herbies RCON ausgelösten
+`SetGodMode`-Aufrufs bewies, dass Herbie selbst KEINE reflektierte UFunction
+zum Triggern nutzt. Reflection-basierte Dispatch-Versuche sind damit generell
+als Sackgasse einzustufen — der native Aufrufweg über
+`AdminCommandRegistry`/`AdminCommandExecutor` ist jetzt der einzig verbliebene
+Kandidat. Details:
+[`docs/research/2026-09-05-authorization-gate-analysis.md`](research/2026-09-05-authorization-gate-analysis.md).
 
 Ein Live-Reflection-Dump (UE4SS' `DumpAllObjects()`, ausgeführt auf einem Testserver mit
 0 Spielern online, nach expliziter Freigabe — siehe `docs/CHANGELOG.md`) hat den
