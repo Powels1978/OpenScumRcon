@@ -48,12 +48,17 @@ explicitly identified. It does not independently verify every command's gameplay
 `ListPlayers` reads live controllers and network connections independently of Herbie,
 returning exact SteamIDs, character names and available balances, ping and finite
 pawn coordinates. Identity precedes the sanitized name for unambiguous line parsing.
-Missing optional fields are omitted; profile IDs are not invented.
+Profile IDs come from checked `GetUserProfileId` reflection. IPs come from the
+version-checked native connection address reader. Missing optional fields are omitted.
 An empty server returns `No players online.`.
 
 RCON responses split at UTF-8 boundaries into payloads of at most 4,086 bytes.
 The 4,096-byte packet body includes the ID, type and two NUL bytes; the four-byte
 length prefix is separate. Bad terminators and embedded NUL payload bytes are rejected.
+
+Read-only `GetWeather`/`GetTimeOfDay` resolve one live controller through
+`ConZWorldSettings.WeatherController2`. Reflection reads current native values on the
+game thread and emits finite, locale-independent JSON. See [live queries](LIVE_QUERIES.md).
 
 ### Validation and open work
 
@@ -123,13 +128,19 @@ ausdrücklich. Sie prüft nicht unabhängig die Spielwirkung jedes einzelnen Bef
 `ListPlayers` liest aktive Controller und Netzwerkverbindungen unabhängig von
 Herbie. Zurückgegeben werden genaue SteamIDs, Charakternamen und verfügbare
 Kontostände, Ping und endliche Pawn-Koordinaten. Für eindeutige Zeilenparser steht
-die Identität vor dem bereinigten Namen. Fehlende optionale Felder werden weggelassen;
-Profil-IDs werden nicht erfunden. Ein leerer Server liefert `No players online.`.
+die Identität vor dem bereinigten Namen. Profil-IDs stammen aus geprüftem
+`GetUserProfileId`, IPs aus der versionsgeprüften nativen Verbindungsadressabfrage.
+Fehlende optionale Felder werden weggelassen. Ein leerer Server liefert `No players online.`.
 
 RCON-Antworten werden an UTF-8-Grenzen in Nutzdaten von höchstens 4.086 Bytes geteilt.
 Der 4.096-Byte-Paketkörper enthält ID, Typ und zwei NUL-Bytes; das vier Byte lange
 Längenpräfix kommt separat hinzu. Fehlerhafte Terminatoren und eingebettete
 NUL-Nutzdaten werden abgewiesen.
+
+Die lesenden Abfragen `GetWeather`/`GetTimeOfDay` ermitteln einen aktiven Controller
+über `ConZWorldSettings.WeatherController2`. Reflection liest native aktuelle Werte
+auf dem Spielthread und erzeugt endliches, gebietsschemaunabhängiges JSON.
+Siehe [Live-Abfragen](LIVE_QUERIES.md#deutsch).
 
 ### Prüfungen und offene Arbeit
 

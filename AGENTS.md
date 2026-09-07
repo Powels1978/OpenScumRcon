@@ -2,6 +2,8 @@
 
 ## English
 
+- Keep Herbie enabled during compatibility work until the required replacement
+  functions have been validated. Do not bring forward the test with Herbie disabled.
 - Publish public-facing documentation, changelog entries, new commit messages,
   release notes and pull-request titles/descriptions in both English and German.
   Put English first, followed by the corresponding German content; update both
@@ -22,6 +24,8 @@
 
 ## Deutsch
 
+- Herbie während der Kompatibilitätsarbeit aktiv lassen, bis die benötigten
+  Ersatzfunktionen geprüft sind. Den Test mit deaktiviertem Herbie nicht vorziehen.
 - Öffentliche Dokumentation, Changelog-Einträge, neue Commit-Nachrichten,
   Versionshinweise sowie Pull-Request-Titel und -Beschreibungen auf Englisch und
   Deutsch veröffentlichen. Englisch zuerst, danach der entsprechende deutsche

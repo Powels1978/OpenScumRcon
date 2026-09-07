@@ -30,3 +30,7 @@ target_include_directories(OpenScumCommandAuthorityTests PRIVATE src)
 add_executable(OpenScumDispatchInfrastructureTests tests/dispatch_infrastructure_tests.cpp src/rcon_protocol.cpp)
 target_compile_features(OpenScumDispatchInfrastructureTests PRIVATE cxx_std_17)
 target_include_directories(OpenScumDispatchInfrastructureTests PRIVATE src)
+
+add_executable(OpenScumLiveQueryTests tests/live_query_tests.cpp)
+target_compile_features(OpenScumLiveQueryTests PRIVATE cxx_std_17)
+target_include_directories(OpenScumLiveQueryTests PRIVATE src)

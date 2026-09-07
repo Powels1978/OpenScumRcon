@@ -9,6 +9,8 @@ All requests require Source RCON authentication. Replace `<SteamID>` with the ex
 
 ```text
 ListPlayers
+GetWeather
+GetTimeOfDay
 !commands
 !commands time
 !exec <SteamID> CheckServerTime
@@ -29,10 +31,10 @@ inconsistent argument metadata. Candidate status is not a successful live test.
 Player records use this format, with optional balances, ping and coordinates:
 
 ```text
-PLAYER steam=<SteamID> money=<balance> gold=<balance> ping=<milliseconds> (<x>, <y>, <z>) | <character name> |
+PLAYER steam=<SteamID> upid=<profileID> ip=<IP> ipSource=connection money=<balance> gold=<balance> ping=<milliseconds> (<x>, <y>, <z>) | <character name> |
 ```
 
-No profile ID is returned. Identity and metadata precede the bounded name, which
+Profile IDs and connection IPs are included when their guarded readers are available. Identity and metadata precede the bounded name, which
 has control characters and `|` removed. This was checked against an existing RCON
 client line parser. Empty servers return `No players online.`.
 
@@ -62,9 +64,10 @@ does not prove gameplay state. Capture failure may occur after execution; check
 state before retrying. A native exception disables further generic execution until
 restart and reports unknown status.
 
-Only GodMode and `CheckServerTime` have been live-validated in this native execution
-work. Other candidate commands, direct compatibility aliases beyond GodMode,
+GodMode, `CheckServerTime` and `ListWeatherControllerOverrides` have been live-validated
+through native command execution. Other candidate commands, direct compatibility aliases beyond GodMode,
 playerless execution and validation with Herbie disabled remain open.
+For read-only player, weather and InGame time queries see [live queries](LIVE_QUERIES.md).
 See [architecture](ARCHITECTURE.md) and [changes](CHANGELOG.md).
 
 ---
@@ -76,6 +79,8 @@ Alle Anfragen benötigen Source-RCON-Anmeldung. `<SteamID>` durch die genaue
 
 ```text
 ListPlayers
+GetWeather
+GetTimeOfDay
 !commands
 !commands time
 !exec <SteamID> CheckServerTime
@@ -97,10 +102,10 @@ Argumentdaten abgewiesen wird. Kandidatenstatus bedeutet keinen bestandenen Live
 Spielerdatensätze verwenden dieses Format mit optionalen Kontoständen, Ping und Koordinaten:
 
 ```text
-PLAYER steam=<SteamID> money=<balance> gold=<balance> ping=<milliseconds> (<x>, <y>, <z>) | <character name> |
+PLAYER steam=<SteamID> upid=<profileID> ip=<IP> ipSource=connection money=<balance> gold=<balance> ping=<milliseconds> (<x>, <y>, <z>) | <character name> |
 ```
 
-Profil-IDs fehlen. Identität und Metadaten stehen vor dem begrenzten Namen, aus dem
+Profil-IDs und Verbindungs-IPs werden bei verfügbaren geprüften Lesepfaden ergänzt. Identität und Metadaten stehen vor dem begrenzten Namen, aus dem
 Steuerzeichen und `|` entfernt werden. Dies wurde gegen einen vorhandenen
 RCON-Client-Zeilenparser geprüft. Leere Server liefern `No players online.`.
 
@@ -131,7 +136,8 @@ gemeldet und beweist keinen Spielzustand. Erfassungsfehler können nach der Ausf
 auftreten; vor Wiederholung den Zustand prüfen. Eine native Ausnahme sperrt die
 weitere allgemeine Ausführung bis zum Neustart und meldet einen unbekannten Status.
 
-Im Rahmen dieser nativen Ausführung wurden nur GodMode und `CheckServerTime` live
-bestätigt. Andere Kandidaten, direkte Kompatibilitätsaliase über GodMode hinaus,
+Über die native Befehlsausführung wurden GodMode, `CheckServerTime` und
+`ListWeatherControllerOverrides` live bestätigt. Andere Kandidaten, direkte Kompatibilitätsaliase über GodMode hinaus,
 Ausführung ohne Online-Spieler und Prüfung mit deaktiviertem Herbie bleiben offen.
+Für lesende Spieler-, Wetter- und InGame-Zeitabfragen siehe [Live-Abfragen](LIVE_QUERIES.md#deutsch).
 Siehe [Architektur](ARCHITECTURE.md#deutsch) und [Änderungen](CHANGELOG.md#deutsch).

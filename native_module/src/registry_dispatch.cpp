@@ -1,4 +1,6 @@
 #include "registry_dispatch.hpp"
+#include "live_query_format.hpp"
+#include <cstring>
 #include "dispatch_request.hpp"
 #include "godmode_trace.hpp"
 #include "response_capture.hpp"
@@ -13,6 +15,8 @@
 #include <stdexcept>
 #include <vector>
 #define NOMINMAX
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <Unreal/AActor.hpp>
 #include <Unreal/Core/Containers/FString.hpp>
@@ -105,6 +109,111 @@ namespace
         std::sort(players.begin(), players.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
         return players;
     }
+    std::uintptr_t slot(UObject* object, std::size_t offset);
+    std::optional<std::int64_t> profile_id(UObject* controller)
+    {
+        auto* fn = UObjectGlobals::StaticFindObject<UFunction*>(nullptr, nullptr,
+            STR("/Script/SCUM.ConZPlayerController:GetUserProfileId"));
+        auto* expected = UObjectGlobals::StaticFindObject<UScriptStruct*>(nullptr, nullptr, STR("/Script/SCUM.DbIntegerId"));
+        auto* result = fn ? CastField<FStructProperty>(fn->GetReturnProperty()) : nullptr;
+        if (!fn || !expected || !result || result->GetStruct().Get() != expected ||
+            fn->GetParmsSize() != sizeof(std::int64_t) || result->GetElementSize() != sizeof(std::int64_t) ||
+            result->GetOffset_Internal() != 0 || expected->GetPropertiesSize() != sizeof(std::int64_t))
+            return std::nullopt;
+        bool value_layout = false;
+        for (auto* property : TFieldRange<FProperty>(expected))
+            if (property->GetName() == STR("Value") && CastField<FInt64Property>(property) &&
+                property->GetOffset_Internal() == 0) value_layout = true;
+        if (!value_layout) return std::nullopt;
+        std::int64_t value = -1;
+        controller->ProcessEvent(fn, &value);
+        return value >= 0 ? std::optional<std::int64_t>(value) : std::nullopt;
+    }
+    using GetAddress = FString*(*)(UObject*, FString*, bool);
+    bool read_address_guarded(GetAddress fn, UObject* connection, FString* result)
+    {
+        __try { return fn(connection, result, false) == result; }
+        __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+    }
+    std::optional<std::string> connection_ip(UObject* controller)
+    {
+        static bool faulted = false;
+        if (faulted || !godmode_trace::supported_build()) return std::nullopt;
+        auto* cls = find_class(STR("/Script/OnlineSubsystemUtils.IpConnection"));
+        auto* connection = object_property(controller, STR("NetConnection"));
+        if (!cls || !live(connection) || !connection->IsA(cls) ||
+            object_property(connection, STR("OwningActor")) != controller) return std::nullopt;
+        // This build's UIpConnection::LowLevelGetRemoteAddress; false omits the port.
+        // It reads the real RemoteAddr and delegates formatting to FInternetAddr.
+        const auto function = reinterpret_cast<std::uintptr_t>(GetModuleHandleW(nullptr)) + 0x12dfde0;
+        if (slot(connection, 0x288) != function) return std::nullopt;
+        constexpr unsigned char expected[] = {
+            0x48,0x89,0x5c,0x24,0x10,0x48,0x89,0x74,0x24,0x18,0x57,0x48,0x83,0xec,0x40,
+            0x48,0x8b,0x89,0x10,0x01,0x00,0x00,0x33,0xf6,0x89,0x74,0x24,0x50,0x48,0x8b,0xda,0x48
+        };
+        unsigned char actual[sizeof(expected)]{};
+        if (!read(reinterpret_cast<void*>(function), actual, sizeof(actual)) ||
+            std::memcmp(actual, expected, sizeof(expected))) return std::nullopt;
+        FString value;
+        if (!read_address_guarded(reinterpret_cast<GetAddress>(function), connection, &value))
+        { faulted = true; return std::nullopt; }
+        const auto address = utf8(value);
+        if (address.empty() || address.size() > 45) return std::nullopt;
+        IN_ADDR ipv4{}; IN6_ADDR ipv6{};
+        if (InetPtonA(AF_INET, address.c_str(), &ipv4) != 1 &&
+            InetPtonA(AF_INET6, address.c_str(), &ipv6) != 1) return std::nullopt;
+        return address;
+    }
+    std::optional<double> live_float(UObject* object, const wchar_t* name)
+    {
+        auto* property = CastField<FFloatProperty>(object->GetPropertyByNameInChain(name));
+        if (!property) return std::nullopt;
+        const auto value = static_cast<double>(property->GetPropertyValueInContainer(object));
+        return std::isfinite(value) ? std::optional<double>(value) : std::nullopt;
+    }
+    std::string weather(bool time_only)
+    {
+        if (!godmode_trace::supported_build()) return "error: live weather unavailable for this SCUM build";
+        auto* settings_class = find_class(STR("/Script/SCUM.ConZWorldSettings"));
+        auto* weather_class = find_class(STR("/Script/SCUM.WeatherController2"));
+        if (!settings_class || !weather_class) return "error: weather reflection unavailable";
+        std::set<UObject*> candidates;
+        UObjectGlobals::ForEachUObject([&](UObject* object, ...) -> RC::LoopAction {
+            if (live(object) && object->IsA(settings_class))
+            {
+                auto* active = object_property(object, STR("WeatherController2"));
+                if (live(active) && active->IsA(weather_class)) candidates.insert(active);
+            }
+            return RC::LoopAction::Continue;
+        });
+        if (candidates.size() != 1)
+            return candidates.empty() ? "error: active weather controller not ready" : "error: ambiguous active weather controller";
+        auto* active = *candidates.begin();
+        auto required = [&](const wchar_t* name) {
+            const auto value = live_float(active, name);
+            if (!value) throw std::runtime_error("required live weather field unavailable");
+            return *value;
+        };
+        WeatherSnapshot snapshot{};
+        snapshot.time_of_day = required(STR("_timeOfDay"));
+        snapshot.time_speed = live_float(active, STR("_timeOfDaySpeed"));
+        if (!time_only)
+        {
+            snapshot.wind_azimuth = required(STR("_windAzimuth"));
+            snapshot.wind_intensity = required(STR("_windIntensity"));
+            snapshot.rain_intensity = required(STR("_rainIntensity"));
+            snapshot.fog_density = required(STR("_fogDensity"));
+            snapshot.sunrise = live_float(active, STR("_sunriseTime"));
+            snapshot.sunset = live_float(active, STR("_sunsetTime"));
+            snapshot.air_temperature = live_float(active, STR("_baseAirTemperature"));
+            snapshot.water_temperature = live_float(active, STR("_waterTemperature"));
+            snapshot.cirrostratus = live_float(active, STR("_cirrostratusCoverage"));
+            snapshot.cumulonimbus = live_float(active, STR("_cumulonimbusCoverage"));
+            snapshot.nimbostratus = live_float(active, STR("_nimbostratusCoverage"));
+            snapshot.max_wind_speed_kph = live_float(active, STR("_maxWindSpeedKph"));
+        }
+        return weather_json(snapshot, time_only);
+    }
     std::string list_players()
     {
         const auto players = connected_players();
@@ -120,6 +229,9 @@ namespace
             // Identity precedes the name so names containing digit sequences cannot
             // impersonate another player in existing line-based client parsers.
             out << "PLAYER steam=" << player.id;
+            if (const auto id = profile_id(player.controller)) out << " upid=" << *id;
+            if (const auto ip = connection_ip(player.controller)) out << " ip=" << *ip << " ipSource=connection";
+            else out << " ipStatus=unavailable";
             auto* money = CastField<FInt64Property>(player.controller->GetPropertyByNameInChain(STR("_moneyBalanceRep")));
             auto* gold = CastField<FInt64Property>(player.controller->GetPropertyByNameInChain(STR("_goldBalanceRep")));
             if (money) out << " money=" << money->GetPropertyValueInContainer(player.controller);
@@ -306,9 +418,11 @@ std::string dispatch(const std::string& text, CommandAuthority authority)
     {
     case DispatchAction::invalid: return "error: " + request.error;
     case DispatchAction::players: return list_players();
+    case DispatchAction::weather: return weather(false);
+    case DispatchAction::time_of_day: return weather(true);
     case DispatchAction::commands: return catalogue(request.filter);
     case DispatchAction::execute: return execute(request);
-    default: return "error: unsupported command; use ListPlayers, !commands, or !exec <SteamID> <command> [arguments]";
+    default: return "error: unsupported command; use ListPlayers, GetWeather, GetTimeOfDay, !commands, or !exec <SteamID> <command> [arguments]";
     }
 }
 }

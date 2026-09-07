@@ -15,6 +15,8 @@ registry-based command dispatch, synchronous SCUM replies and an independent
 
 ```text
 ListPlayers
+GetWeather
+GetTimeOfDay
 !commands [filter]
 !exec <SteamID> <SCUM-command> [native arguments...]
 SetGodMode true <SteamID>
@@ -43,6 +45,21 @@ Herbie remained loaded; its reply path still worked. Operation with Herbie disab
 and execution without a connected player remain to be validated or implemented.
 See [command usage and limitations](docs/NATIVE_COMMANDS.md).
 
+### Live player and weather queries
+
+`ListPlayers` now includes the reflected profile ID (`upid`) and the address observed
+on the active player connection (`ip`, `ipSource=connection`), when available.
+Unsupported address readers report `ipStatus=unavailable`; no historical IP is substituted.
+
+`GetWeather` and `GetTimeOfDay` read the active SCUM weather controller without an
+online executor. They return current InGame time, wind direction/intensity, rain,
+fog and available additional weather fields. Current wind speed in km/h is left
+`null` until its conversion is verified; `maxWindSpeedKph` is only the configured
+maximum. `CheckServerTime` reports the server computer's clock instead.
+
+Herbie remains enabled during compatibility work until the required replacement
+functions are validated. See [live query details](docs/LIVE_QUERIES.md).
+
 ### Build
 
 Requirements: Windows x64, Visual Studio 2022 Build Tools, CMake 3.22+, and a separate
@@ -51,10 +68,11 @@ installed UE4SS runtime. Dependencies and generated binaries are not included.
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DUE4SS_DIR="C:/dev/RE-UE4SS"
-cmake --build build --config Game__Shipping__Win64 --target OpenScumRconNative OpenScumGodModeRequestTests OpenScumCommandAuthorityTests OpenScumDispatchInfrastructureTests
+cmake --build build --config Game__Shipping__Win64 --target OpenScumRconNative OpenScumGodModeRequestTests OpenScumCommandAuthorityTests OpenScumDispatchInfrastructureTests OpenScumLiveQueryTests
 .\build\native_module\Game__Shipping__Win64\OpenScumGodModeRequestTests.exe
 .\build\native_module\Game__Shipping__Win64\OpenScumCommandAuthorityTests.exe
 .\build\native_module\Game__Shipping__Win64\OpenScumDispatchInfrastructureTests.exe
+.\build\native_module\Game__Shipping__Win64\OpenScumLiveQueryTests.exe
 ```
 
 Install the module using your UE4SS native-mod layout, as
@@ -91,6 +109,8 @@ mit Herbies Befehlen steht noch aus.
 
 ```text
 ListPlayers
+GetWeather
+GetTimeOfDay
 !commands [filter]
 !exec <SteamID> <SCUM-command> [native arguments...]
 SetGodMode true <SteamID>
@@ -120,6 +140,22 @@ Herbie blieb geladen; dessen Antwortpfad funktionierte weiterhin. Betrieb mit
 deaktiviertem Herbie und Ausführung ohne verbundenen Spieler müssen noch geprüft
 beziehungsweise implementiert werden. Siehe [Befehle und Grenzen](docs/NATIVE_COMMANDS.md#deutsch).
 
+### Live-Spieler- und Wetterabfragen
+
+`ListPlayers` ergänzt jetzt die reflektierte Profil-ID (`upid`) und die an der aktiven
+Spielerverbindung beobachtete Adresse (`ip`, `ipSource=connection`), soweit verfügbar.
+Nicht unterstützte Adressabfragen melden `ipStatus=unavailable`; keine historische
+IP wird als Ersatz ausgegeben.
+
+`GetWeather` und `GetTimeOfDay` lesen den aktiven SCUM-Wettercontroller ohne
+Online-Executor. Sie liefern aktuelle InGame-Zeit, Windrichtung/-stärke, Regen,
+Nebel und verfügbare weitere Wetterfelder. Die aktuelle Windgeschwindigkeit in km/h
+bleibt bis zur geprüften Umrechnung `null`; `maxWindSpeedKph` ist nur das eingestellte
+Maximum. `CheckServerTime` meldet hingegen die Uhrzeit des Serverrechners.
+
+Herbie bleibt während der Kompatibilitätsarbeit aktiv, bis die benötigten
+Ersatzfunktionen geprüft sind. Siehe [Details zu Live-Abfragen](docs/LIVE_QUERIES.md#deutsch).
+
 ### Bauen und installieren
 
 Voraussetzungen: Windows x64, Visual Studio 2022 Build Tools, CMake ab 3.22 und ein
@@ -129,10 +165,11 @@ nicht enthalten.
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DUE4SS_DIR="C:/dev/RE-UE4SS"
-cmake --build build --config Game__Shipping__Win64 --target OpenScumRconNative OpenScumGodModeRequestTests OpenScumCommandAuthorityTests OpenScumDispatchInfrastructureTests
+cmake --build build --config Game__Shipping__Win64 --target OpenScumRconNative OpenScumGodModeRequestTests OpenScumCommandAuthorityTests OpenScumDispatchInfrastructureTests OpenScumLiveQueryTests
 .\build\native_module\Game__Shipping__Win64\OpenScumGodModeRequestTests.exe
 .\build\native_module\Game__Shipping__Win64\OpenScumCommandAuthorityTests.exe
 .\build\native_module\Game__Shipping__Win64\OpenScumDispatchInfrastructureTests.exe
+.\build\native_module\Game__Shipping__Win64\OpenScumLiveQueryTests.exe
 ```
 
 Das Modul entsprechend der UE4SS-Struktur für native Mods als

@@ -4,6 +4,19 @@
 
 ## English
 
+### 2026-09-07 — Player profile/IP and live InGame weather
+
+Added guarded profile IDs and actual connection IPs to `ListPlayers`.
+Added authenticated `GetWeather` and `GetTimeOfDay` JSON queries using the active
+SCUM weather controller without an online executor. Read native rain, fog, wind,
+clouds and time; do not substitute database snapshots or override values.
+Current km/h is explicitly unavailable until its conversion is verified.
+
+Validation: Shipping build, 96 runtime-compatible UE4SS imports, all four standalone
+test programs, empty/occupied live queries, Herbie profile comparison and IP comparison
+against SCUM's login record. Herbie remained enabled. No public player or server data
+is included. General commands still require an online executor; full parity remains open.
+
 ### 2026-09-07 — Registry dispatch, native replies and player list
 
 Added `!commands [filter]`, `!exec <SteamID> <command> [arguments...]` and independent
@@ -67,6 +80,20 @@ logs and environment-specific notes are excluded from the public tree.
 ---
 
 ## Deutsch
+
+### 2026-09-07 — Spielerprofil/IP und aktuelles InGame-Wetter
+
+Geprüfte Profil-IDs und tatsächliche Verbindungs-IPs in `ListPlayers` ergänzt.
+Authentifizierte JSON-Abfragen `GetWeather` und `GetTimeOfDay` verwenden den aktiven
+SCUM-Wettercontroller ohne Online-Executor. Native Werte für Regen, Nebel, Wind,
+Wolken und Zeit auslesen; keine Datenbankstände oder Overrides als Ersatz verwenden.
+Aktuelle km/h bleiben bis zur geprüften Umrechnung ausdrücklich nicht verfügbar.
+
+Prüfungen: Shipping-Build, 96 zur Laufzeit passende UE4SS-Importe, alle vier
+Testprogramme, leere/belegte Live-Abfragen, Herbie-Profilvergleich und IP-Abgleich
+mit SCUMs Login-Eintrag. Herbie blieb aktiv. Keine echten Spieler-/Serverdaten
+veröffentlicht. Allgemeine Befehle benötigen weiter einen Online-Executor;
+vollständige Funktionsgleichheit bleibt offen.
 
 ### 2026-09-07 — Registry-Ausführung, native Antworten und Spielerliste
 

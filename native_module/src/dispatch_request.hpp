@@ -15,7 +15,7 @@ inline bool steam_id_valid(std::string_view id)
 {
     return id.size() == 17 && std::all_of(id.begin(), id.end(), [](char c) { return c >= '0' && c <= '9'; });
 }
-enum class DispatchAction { unknown, invalid, players, commands, execute };
+enum class DispatchAction { unknown, invalid, players, commands, execute, weather, time_of_day };
 struct DispatchRequest
 {
     DispatchAction action = DispatchAction::unknown;
@@ -57,6 +57,11 @@ inline DispatchRequest parse_dispatch_request(std::string_view text)
     {
         if (tokens.size() != 1) return fail("usage: ListPlayers");
         r.action = DispatchAction::players;
+    }
+    else if (verb == "getweather" || verb == "gettimeofday")
+    {
+        if (tokens.size() != 1) return fail("usage: GetWeather or GetTimeOfDay (no arguments)");
+        r.action = verb == "getweather" ? DispatchAction::weather : DispatchAction::time_of_day;
     }
     else if (verb == "!commands")
     {
