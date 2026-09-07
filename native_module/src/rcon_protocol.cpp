@@ -1,6 +1,8 @@
 #include "rcon_protocol.hpp"
 
 #include <cstring>
+#include <algorithm>
+#include "response_buffer.hpp"
 
 namespace openscumrcon::protocol
 {
@@ -34,7 +36,8 @@ namespace openscumrcon::protocol
         std::size_t offset = 0;
         while (offset < text.size())
         {
-            const std::size_t chunk_len = std::min(MAX_RESPONSE_CHUNK, text.size() - offset);
+            std::size_t chunk_len = utf8_prefix_size(std::string_view(text).substr(offset), MAX_RESPONSE_CHUNK);
+            if (!chunk_len) chunk_len = std::min(MAX_RESPONSE_CHUNK, text.size() - offset);
             packets.push_back(encode_packet(request_id, SERVERDATA_RESPONSE_VALUE, text.substr(offset, chunk_len)));
             offset += chunk_len;
         }
@@ -43,7 +46,8 @@ namespace openscumrcon::protocol
 
     bool decode_packet_body(const std::vector<char>& body, Packet& out)
     {
-        if (body.size() < 10)
+        if (body.size() < 10 || body[body.size() - 1] != '\0' || body[body.size() - 2] != '\0' ||
+            std::find(body.begin() + 8, body.end() - 2, '\0') != body.end() - 2)
         {
             return false;
         }

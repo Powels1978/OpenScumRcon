@@ -24,6 +24,7 @@
 #include "admin_dispatch.hpp"
 #include "godmode_trace.hpp"
 #include "godmode_dispatch.hpp"
+#include "response_capture.hpp"
 #include "command_queue.hpp"
 #include "rcon_server.hpp"
 
@@ -335,6 +336,7 @@ public:
 
     ~OpenScumRconNative() override
     {
+        openscumrcon::response_capture::shutdown();
         openscumrcon::godmode_trace::shutdown();
         m_rcon_server.stop();
         if (m_engine_tick_callback != RC::Unreal::Hook::ERROR_ID)
@@ -477,6 +479,8 @@ public:
         RC::Output::send<RC::LogLevel::Verbose>(STR("[OpenScumRconNative] GodMode trace v1 initialized={}\n"), godmode_trace_ready);
         const bool native_godmode_ready = openscumrcon::godmode::initialize();
         RC::Output::send<RC::LogLevel::Verbose>(STR("[OpenScumRconNative] Native GodMode dispatcher v2 (RCON authority) initialized={}\n"), native_godmode_ready);
+        const bool response_ready = openscumrcon::response_capture::initialize();
+        RC::Output::send<RC::LogLevel::Verbose>(STR("[OpenScumRconNative] Native registry dispatcher / response capture initialized={}\n"), response_ready);
         if (openscumrcon::godmode_trace::supported_build() && install_native_execute_hook())
         {
             RC::Output::send<RC::LogLevel::Verbose>(STR("[OpenScumRconNative] Native execute() hook installed\n"));

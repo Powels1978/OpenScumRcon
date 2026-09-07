@@ -4,135 +4,149 @@
 
 ## English
 
-### Request and authority flow
+### Request flow and native dispatch
 
-The native UE4SS module starts a Source RCON TCP listener. A client must authenticate
-before a command is enqueued. `CommandAuthority::authenticated_rcon` travels with
-the request through the queue to the game-thread dispatcher. Requests without that
-authority are rejected before any native command call. Response futures remain
-associated with their individual requests.
+The Source RCON listener authenticates before enqueueing a request.
+`CommandAuthority::authenticated_rcon` travels through the queue to the game
+thread; requests without authority are rejected. Individual futures retain response
+association. Network threads never access gameplay objects.
 
-Unreal object discovery, construction and execution happen synchronously on the
-game thread. Network threads do not access gameplay objects.
+`!commands` reads the live `AdminCommandRegistry` and command class default objects.
+It reports verbs, required/declared/repeating argument counts, enabled/shipping/server
+flags and native eligibility. Metadata, class identity, the shared reply method
+and executable handler are checked. A native candidate is not a live-tested command.
 
-### Native GodMode
+`!exec` resolves a unique eligible entry and checks argument counts, the supported
+build and response hook. It requires the exact connected SteamID, a live Prisoner
+pawn and the controller's real AdminCommandExecutor interface. A normal command
+instance is created with that controller as Outer. Class, Outer and vtable are
+validated before invoking the native handler with a borrowed `TArray<FString>`.
+The first SteamID selects context and is not appended to native arguments.
 
-The target is resolved by its exact SteamID using live `ConZPlayerController`
-instances with a valid connection and Prisoner pawn. No fallback to another player
-is allowed. The dispatcher resolves the `SetGodMode_C` class and creates a regular
-command instance with the target controller as Outer.
+Unreal owns command instances. No class default object Outer, player admin rights
+or shared chat cooldowns are changed, and no interface pointer is fabricated.
+Object pointers are not cached between requests. A structured exception in the
+generic native call latches further generic execution off until restart and reports
+unknown execution status; no automatic retry occurs.
 
-The implementation calls the version-checked native GodMode handler with a borrowed
-`TArray<FString>` view containing one boolean argument. The SteamID is used to select
-the recipient and is not forwarded as an extra native argument. Unreal owns the
-command instance; the module neither modifies the class default object's Outer nor
-fabricates an executor interface pointer.
+### GodMode, replies and player list
 
-RCON authority is separate from the target's chat permissions. The preparation
-request reports SCUM's chat permission check for diagnosis; it is not a permission
-gate for an authenticated RCON command. The dispatcher does not grant the recipient
-admin rights or change shared chat cooldown timestamps.
+The direct `SetGodMode true|false <SteamID>` route independently checks GodMode and
+unchanged Immortality, then appends the native reply. `!godmode_prepare` checks
+construction and reports chat permissions without execution. Chat permission is
+diagnostic; authenticated RCON supplies command authority.
 
-Execution verifies the resulting GodMode flag and checks that Immortality was
-preserved. Replies describe that verified state. Native SCUM response capture has
-not yet been implemented.
+A version- and prologue-checked hook captures the shared native reply method.
+A thread-local RAII scope matches the exact currently executing command instance.
+Its synchronous replies are redirected into its response buffer. Other instances
+and threads pass through the original method with unchanged arguments.
+The buffer allows 65,536 UTF-8 bytes and 128 messages, with explicit truncation and
+failure reporting. Replies deferred until after execution returns are not captured.
+Generic execution reports a false native return as an error; true without text is
+explicitly identified. It does not independently verify every command's gameplay effect.
 
-### Version and observation guards
+`ListPlayers` reads live controllers and network connections independently of Herbie,
+returning exact SteamIDs, character names and available balances, ping and finite
+pawn coordinates. Identity precedes the sanitized name for unambiguous line parsing.
+Missing optional fields are omitted; profile IDs are not invented.
+An empty server returns `No players online.`.
 
-The tested native path validates the executable image metadata, function signatures,
-object identity and vtable slots. An unsupported signature disables execution.
-Offsets are implementation details of the tested build, not portable promises.
-
-The optional GodMode observer is bounded to four calls and a 120-second window. It
-records local diagnostic data and calls the original function without altering its
-arguments or result. Other historical diagnostic commands are development tools;
-their local output must not be committed or published.
+RCON responses split at UTF-8 boundaries into payloads of at most 4,086 bytes.
+The 4,096-byte packet body includes the ID, type and two NUL bytes; the four-byte
+length prefix is separate. Bad terminators and embedded NUL payload bytes are rejected.
 
 ### Validation and open work
 
-Standalone tests cover request parsing, rejecting missing authority, authenticated
-queue handoff and response association. Live tests verified GodMode on/off for
-admin and non-admin targets, unchanged Immortality, disconnected-target rejection,
-and rejection before native execution when authentication was missing or incorrect.
-Herbie remained loaded during the tests; removal still needs a separate validation.
+The tested native build is SCUM **1.3.3.1.145413**. Image metadata, signatures,
+object identity and vtable checks constrain calls; offsets are not portable promises.
+Optional observers produce bounded local diagnostics that must remain private.
 
-Two reflected paths did not perform the requested gameplay change:
-`MiscStatics::Test_ProcessAdminCommand` is a Shipping stub, and the attempted
-`PlayerRpcChannel::Chat_Server_ProcessAdminCommand` invocation had no effect.
-A historical RPC acknowledgement must not be interpreted as successful execution.
+Validation passed: Shipping build, 90 UE4SS imports against the installed runtime,
+parser/authority/queue tests, response isolation and bounds, and UTF-8 multi-packet
+framing. Live checks covered the catalogue, empty/occupied player lists, an existing
+client line parser, authentication/argument rejection, non-admin GodMode on/off,
+native `CheckServerTime` replies and foreign Herbie reply passthrough. GodMode was
+restored, Immortality and chat permissions were unchanged, and the server stayed stable.
 
-Next work is the registry-based dispatcher, native response capture and an independent
-`ListPlayers` query. Commands needing a server-wide executor without any connected
-player require additional investigation. No blanket compatibility claim is made.
+The ineffective reflected RPC execution fallback has been removed. Historical
+observers remain diagnostics. Herbie stayed loaded during validation. Testing with
+Herbie disabled, the other native candidates, a playerless server executor and full
+client command compatibility remain open.
 
 ---
 
 ## Deutsch
 
-### Anfrage und Berechtigung
+### Anfragefluss und native Ausführung
 
-Das native UE4SS-Modul startet einen TCP-Listener für Source RCON. Ein Client muss
-sich anmelden, bevor ein Befehl in die Warteschlange gelangt.
-`CommandAuthority::authenticated_rcon` wird mit der Anfrage über die Queue zum
-Dispatcher auf dem Spielthread weitergegeben. Anfragen ohne diese Berechtigung
-werden vor jedem nativen Befehlsaufruf abgewiesen. Antwort-Futures bleiben ihrer
-jeweiligen Anfrage zugeordnet.
+Der Source-RCON-Listener authentifiziert vor Aufnahme einer Anfrage in die Queue.
+`CommandAuthority::authenticated_rcon` gelangt zum Spielthread; Anfragen ohne
+Berechtigung werden abgewiesen. Einzelne Futures erhalten die Antwortzuordnung.
+Netzwerkthreads greifen niemals auf Spielobjekte zu.
 
-Unreal-Objekte werden synchron auf dem Spielthread gesucht, erzeugt und verwendet.
-Netzwerkthreads greifen nicht auf Spielobjekte zu.
+`!commands` liest die aktive `AdminCommandRegistry` und die Klassenstandardobjekte
+der Befehle. Angezeigt werden Namen, erforderliche/deklarierte/wiederholbare
+Argumentzahlen, enabled/shipping/server-Flags und native Eignung. Metadaten,
+Klassenidentität, gemeinsame Antwortmethode und ausführbarer Handler werden geprüft.
+Ein nativer Kandidat ist kein live geprüfter Befehl.
 
-### Nativer GodMode
+`!exec` ermittelt einen eindeutigen geeigneten Eintrag und prüft Argumentzahlen,
+unterstützten Build und Antwort-Hook. Benötigt werden die exakte verbundene SteamID,
+eine aktive Prisoner-Pawn und das echte AdminCommandExecutor-Interface des Controllers.
+Eine reguläre Befehlsinstanz wird mit diesem Controller als Outer erzeugt.
+Klasse, Outer und Vtable werden vor dem nativen Aufruf mit einer geliehenen
+`TArray<FString>`-Ansicht geprüft. Die erste SteamID wählt den Kontext und wird
+nicht an native Argumente angehängt.
 
-Das Ziel wird anhand seiner exakten SteamID unter gültigen `ConZPlayerController`-
-Instanzen mit aktiver Verbindung und Prisoner-Pawn ermittelt. Ein Ausweichen auf
-einen anderen Spieler ist ausgeschlossen. Der Dispatcher löst `SetGodMode_C` auf
-und erzeugt eine reguläre Befehlsinstanz mit dem Zielcontroller als Outer.
+Unreal verwaltet die Befehlsinstanzen. Klassenstandardobjekt-Outer, Spielerrechte
+und gemeinsame Chat-Cooldowns werden nicht verändert; kein Interfacezeiger wird
+erfunden. Objektzeiger werden nicht zwischen Anfragen gespeichert. Eine strukturierte
+Ausnahme im allgemeinen nativen Aufruf sperrt weitere allgemeine Ausführung bis zum
+Neustart und meldet den Status als unbekannt; es gibt keine automatische Wiederholung.
 
-Die Implementierung ruft den versionsgeprüften nativen GodMode-Handler mit einer
-geliehenen `TArray<FString>`-Ansicht auf, die genau ein boolesches Argument enthält.
-Die SteamID dient der Zielauswahl und wird nicht als zusätzliches natives Argument
-übergeben. Unreal verwaltet die Befehlsinstanz; das Modul verändert weder den Outer
-des Klassenstandardobjekts noch erfindet es einen Executor-Interfacezeiger.
+### GodMode, Antworten und Spielerliste
 
-Die RCON-Berechtigung ist von den Chatrechten des Zielspielers getrennt. Der
-Vorbereitungsbefehl zeigt SCUMs Chatberechtigungsprüfung zur Diagnose an; sie ist
-keine Zugangsvoraussetzung für einen authentifizierten RCON-Befehl. Der Dispatcher
-vergibt keine Adminrechte an den Zielspieler und verändert keine gemeinsam genutzten
-Zeitstempel für Chat-Cooldowns.
+Der direkte Pfad `SetGodMode true|false <SteamID>` prüft GodMode und unveränderte
+Immortality unabhängig und ergänzt die native Antwort. `!godmode_prepare` prüft
+die Erzeugung und meldet Chatrechte ohne Ausführung. Chatrechte dienen der Diagnose;
+die authentifizierte RCON-Verbindung liefert die Befehlsberechtigung.
 
-Die Ausführung prüft den resultierenden GodMode-Zustand und unveränderte Immortality.
-Antworten beschreiben diesen kontrollierten Zustand. Die Erfassung nativer
-SCUM-Antworttexte ist noch nicht implementiert.
+Ein versions- und signaturgeprüfter Hook erfasst die gemeinsame native Antwortmethode.
+Ein threadlokaler RAII-Bereich prüft die genaue gerade ausgeführte Befehlsinstanz.
+Ihre synchronen Antworten werden in ihren Antwortpuffer umgeleitet. Andere
+Instanzen und Threads durchlaufen die Originalmethode mit unveränderten Argumenten.
+Der Puffer erlaubt 65.536 UTF-8-Bytes und 128 Nachrichten; Kürzung und Fehler werden
+ausdrücklich gemeldet. Nach Rückkehr aus der Ausführung verzögerte Antworten werden
+nicht erfasst. Die allgemeine Ausführung meldet false als Fehler und true ohne Text
+ausdrücklich. Sie prüft nicht unabhängig die Spielwirkung jedes einzelnen Befehls.
 
-### Versionsprüfung und Beobachtung
+`ListPlayers` liest aktive Controller und Netzwerkverbindungen unabhängig von
+Herbie. Zurückgegeben werden genaue SteamIDs, Charakternamen und verfügbare
+Kontostände, Ping und endliche Pawn-Koordinaten. Für eindeutige Zeilenparser steht
+die Identität vor dem bereinigten Namen. Fehlende optionale Felder werden weggelassen;
+Profil-IDs werden nicht erfunden. Ein leerer Server liefert `No players online.`.
 
-Der getestete native Pfad prüft Metadaten der ausführbaren Datei,
-Funktionssignaturen, Objektidentität und Vtable-Einträge. Eine unbekannte Signatur
-deaktiviert die Ausführung. Offsets sind Implementierungsdetails des getesteten
-Builds und keine Zusage zur Kompatibilität mit anderen Versionen.
+RCON-Antworten werden an UTF-8-Grenzen in Nutzdaten von höchstens 4.086 Bytes geteilt.
+Der 4.096-Byte-Paketkörper enthält ID, Typ und zwei NUL-Bytes; das vier Byte lange
+Längenpräfix kommt separat hinzu. Fehlerhafte Terminatoren und eingebettete
+NUL-Nutzdaten werden abgewiesen.
 
-Der optionale GodMode-Beobachter ist auf vier Aufrufe und ein Zeitfenster von
-120 Sekunden begrenzt. Er schreibt lokale Diagnosedaten und ruft die Originalfunktion
-mit unveränderten Argumenten und unverändertem Ergebnis auf. Weitere historische
-Diagnosebefehle sind Entwicklungswerkzeuge; ihre lokalen Ausgaben dürfen nicht
-versioniert oder veröffentlicht werden.
+### Prüfungen und offene Arbeit
 
-### Prüfungen und offene Arbeiten
+Getestet ist SCUM-Build **1.3.3.1.145413**. Image-Metadaten, Signaturen,
+Objektidentität und Vtable-Prüfungen begrenzen Aufrufe; Offsets sind keine
+Portabilitätszusage. Optionale Beobachter erzeugen begrenzte lokale Diagnosen,
+die privat bleiben müssen.
 
-Eigenständige Tests prüfen das Einlesen der Befehle, die Abweisung fehlender
-Berechtigung, die authentifizierte Queue-Übergabe und die Zuordnung der Antworten.
-Live-Tests bestätigten GodMode an/aus bei Zielspielern mit und ohne Adminrechte,
-unveränderte Immortality, die Abweisung nicht verbundener Ziele und die Abweisung
-fehlender oder falscher Anmeldung vor der nativen Ausführung. Herbie blieb während
-der Tests geladen; sein Entfernen erfordert noch eine gesonderte Prüfung.
+Bestanden: Shipping-Build, 90 UE4SS-Importe gegen die installierte Laufzeit,
+Parser-/Berechtigungs-/Queue-Tests, isolierte/begrenzte Antworten und mehrteilige
+UTF-8-Pakete. Live geprüft wurden Katalog, leere/belegte Spielerlisten, ein bestehender
+Client-Zeilenparser, abgewiesene Anmeldungen/Argumente, Nicht-Admin-GodMode an/aus,
+native `CheckServerTime`-Antworten und Durchleitung fremder Herbie-Antworten.
+GodMode wurde zurückgesetzt, Immortality und Chatrechte blieben unverändert,
+der Server stabil.
 
-Zwei Reflection-Pfade bewirkten die angeforderte Spieländerung nicht:
-`MiscStatics::Test_ProcessAdminCommand` ist im Shipping-Build eine leere
-Stub-Funktion; der versuchte Aufruf von
-`PlayerRpcChannel::Chat_Server_ProcessAdminCommand` blieb wirkungslos.
-Eine historische RPC-Bestätigung darf nicht als erfolgreiche Ausführung gelten.
-
-Als Nächstes folgen ein Dispatcher auf Basis der Befehlsregistrierung, die Erfassung
-nativer Antworten und eine unabhängige `ListPlayers`-Abfrage. Befehle mit einem
-serverweiten Executor ohne verbundenen Spieler müssen weiter untersucht werden.
-Eine allgemeine Kompatibilität mit allen Befehlen wird nicht zugesagt.
+Der wirkungslose reflektierte RPC-Ausführungspfad wurde entfernt. Historische
+Beobachter bleiben Diagnosen. Herbie blieb während der Prüfung geladen.
+Tests mit deaktiviertem Herbie, die übrigen nativen Kandidaten, ein serverweiter
+Executor ohne Online-Spieler und vollständige Client-Befehlskompatibilität sind offen.

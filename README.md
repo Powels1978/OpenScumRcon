@@ -9,34 +9,39 @@ The project aims to replace the discontinued Herbie RCON integration.
 
 ### Current status
 
-Early development. The listener, authenticated worker-to-game-thread queue, and
-native GodMode dispatcher are implemented. This is not yet a complete replacement
-for all Herbie commands.
-
-Supported requests:
+Early development. Authenticated RCON, the game-thread queue, native GodMode,
+registry-based command dispatch, synchronous SCUM replies and an independent
+`ListPlayers` query are implemented. Full Herbie command compatibility remains open.
 
 ```text
+ListPlayers
+!commands [filter]
+!exec <SteamID> <SCUM-command> [native arguments...]
 SetGodMode true <SteamID>
 SetGodMode false <SteamID>
 !godmode_state <SteamID>
 !godmode_prepare <SteamID>
 ```
 
-A leading `#` is accepted for `SetGodMode`. Supply the exact 17-digit SteamID of a
-connected target with a live character. The authenticated RCON connection grants
-command authority; the recipient does not need in-game admin rights.
-`!godmode_prepare` checks object construction and reports chat permissions without
-changing GodMode. Execution verifies GodMode and checks that Immortality is unchanged.
+Native execution requires the exact 17-digit SteamID of a connected player with a
+live character. Their controller supplies context; RCON authentication supplies
+authority. The player does not need in-game admin rights. `ListPlayers` and
+`!commands` also work without online players. A leading `#` is accepted for
+`ListPlayers`, `SetGodMode` and the native command name inside `!exec`.
 
-The native path is guarded for the tested SCUM build **1.3.3.1.145413**. Unsupported
-builds are rejected. General command dispatch, native response capture, `ListPlayers`,
-and commands without a connected player remain under development. Historical RPC
-diagnostics may return a dispatch acknowledgement; that does not verify command execution.
+The direct `SetGodMode` request verifies GodMode and unchanged Immortality, then
+appends SCUM's captured reply. Generic `!exec` returns SCUM's synchronous text
+without independently verifying every command's gameplay effect.
+Native calls are guarded for SCUM build **1.3.3.1.145413**.
 
-Live validation covered GodMode on/off for admin and non-admin recipients, invalid
-or disconnected targets, and rejected unauthenticated requests. Herbie remained
-loaded alongside the module during these tests; running with Herbie removed has
-not yet been validated. The current replies report verified state, not captured SCUM chat text.
+Live validation found 233 registered commands: 185 native candidates, 47 disabled
+or client-only entries and one entry with inconsistent argument metadata.
+Candidate status does not mean a command has been individually live-tested.
+Tests covered GodMode on/off for a non-admin recipient, `CheckServerTime`,
+empty/occupied player lists, authentication rejection and argument validation.
+Herbie remained loaded; its reply path still worked. Operation with Herbie disabled
+and execution without a connected player remain to be validated or implemented.
+See [command usage and limitations](docs/NATIVE_COMMANDS.md).
 
 ### Build
 
@@ -46,9 +51,10 @@ installed UE4SS runtime. Dependencies and generated binaries are not included.
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DUE4SS_DIR="C:/dev/RE-UE4SS"
-cmake --build build --config Game__Shipping__Win64 --target OpenScumRconNative OpenScumGodModeRequestTests OpenScumCommandAuthorityTests
+cmake --build build --config Game__Shipping__Win64 --target OpenScumRconNative OpenScumGodModeRequestTests OpenScumCommandAuthorityTests OpenScumDispatchInfrastructureTests
 .\build\native_module\Game__Shipping__Win64\OpenScumGodModeRequestTests.exe
 .\build\native_module\Game__Shipping__Win64\OpenScumCommandAuthorityTests.exe
+.\build\native_module\Game__Shipping__Win64\OpenScumDispatchInfrastructureTests.exe
 ```
 
 Install the module using your UE4SS native-mod layout, as
@@ -78,37 +84,41 @@ Das Projekt soll die eingestellte Herbie-RCON-Anbindung ersetzen.
 
 ### Aktueller Stand
 
-Frühe Entwicklung. RCON-Listener, authentifizierte Übergabe vom Netzwerkthread zum
-Spielthread und nativer GodMode-Dispatcher sind implementiert. Dieser Stand ist
-noch kein vollständiger Ersatz für alle Herbie-Befehle.
-
-Unterstützte Anfragen:
+Frühe Entwicklung. Authentifiziertes RCON, die Queue zum Spielthread, nativer
+GodMode, Befehlsausführung über die Registry, synchrone SCUM-Antworten und eine
+eigenständige `ListPlayers`-Abfrage sind implementiert. Vollständige Kompatibilität
+mit Herbies Befehlen steht noch aus.
 
 ```text
+ListPlayers
+!commands [filter]
+!exec <SteamID> <SCUM-command> [native arguments...]
 SetGodMode true <SteamID>
 SetGodMode false <SteamID>
 !godmode_state <SteamID>
 !godmode_prepare <SteamID>
 ```
 
-`SetGodMode` akzeptiert auch ein führendes `#`. Benötigt wird die genaue 17-stellige
-SteamID eines verbundenen Zielspielers mit aktivem Charakter. Die authentifizierte
-RCON-Verbindung berechtigt zur Befehlsausführung; der Zielspieler benötigt keine
-Adminrechte im Spiel. `!godmode_prepare` prüft die Objekterzeugung und zeigt die
-Chatberechtigung an, ohne GodMode zu ändern. Bei der Ausführung wird der GodMode-Zustand
-kontrolliert und geprüft, dass Immortality unverändert bleibt.
+Die native Ausführung benötigt die genaue 17-stellige SteamID eines verbundenen
+Spielers mit aktivem Charakter. Sein Controller liefert den Kontext; die
+RCON-Anmeldung liefert die Berechtigung. Der Spieler benötigt keine Adminrechte.
+`ListPlayers` und `!commands` funktionieren auch ohne Online-Spieler. Ein führendes
+`#` wird bei `ListPlayers`, `SetGodMode` und dem nativen Befehlsnamen innerhalb von
+`!exec` akzeptiert.
 
-Der native Pfad ist für den getesteten SCUM-Build **1.3.3.1.145413** abgesichert.
-Nicht unterstützte Builds werden abgewiesen. Allgemeine Befehlsausführung, Erfassung
-nativer Antworttexte, `ListPlayers` und Befehle ohne verbundenen Spieler werden noch
-entwickelt. Historische RPC-Diagnosen können eine Übergabebestätigung zurückgeben;
-diese belegt keine tatsächliche Befehlsausführung.
+Der direkte `SetGodMode`-Aufruf prüft GodMode sowie unveränderte Immortality und
+ergänzt SCUMs erfassten Antworttext. Allgemeines `!exec` liefert SCUMs synchronen
+Text ohne zusätzliche unabhängige Prüfung der Spielwirkung jedes Befehls.
+Native Aufrufe sind für SCUM-Build **1.3.3.1.145413** abgesichert.
 
-Live geprüft wurden GodMode an/aus bei Zielspielern mit und ohne Adminrechte,
-ungültige oder nicht verbundene Ziele sowie die Abweisung nicht authentifizierter
-Anfragen. Herbie blieb während dieser Tests parallel geladen; der Betrieb ohne
-Herbie wurde noch nicht gesondert bestätigt. Die aktuellen Antworten beschreiben
-den geprüften Zustand und enthalten keine mitgeschnittenen SCUM-Chatantworten.
+Live wurden 233 registrierte Befehle gefunden: 185 native Kandidaten, 47 deaktivierte
+oder rein clientseitige Einträge und ein Eintrag mit widersprüchlichen Argumentdaten.
+Der Kandidatenstatus bedeutet keine erfolgte Live-Prüfung des einzelnen Befehls.
+Getestet sind GodMode an/aus bei einem Nicht-Admin-Ziel, `CheckServerTime`,
+Spielerlisten bei leerem/belegtem Server, abgewiesene Anmeldungen und Argumentprüfungen.
+Herbie blieb geladen; dessen Antwortpfad funktionierte weiterhin. Betrieb mit
+deaktiviertem Herbie und Ausführung ohne verbundenen Spieler müssen noch geprüft
+beziehungsweise implementiert werden. Siehe [Befehle und Grenzen](docs/NATIVE_COMMANDS.md#deutsch).
 
 ### Bauen und installieren
 
@@ -119,9 +129,10 @@ nicht enthalten.
 
 ```powershell
 cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DUE4SS_DIR="C:/dev/RE-UE4SS"
-cmake --build build --config Game__Shipping__Win64 --target OpenScumRconNative OpenScumGodModeRequestTests OpenScumCommandAuthorityTests
+cmake --build build --config Game__Shipping__Win64 --target OpenScumRconNative OpenScumGodModeRequestTests OpenScumCommandAuthorityTests OpenScumDispatchInfrastructureTests
 .\build\native_module\Game__Shipping__Win64\OpenScumGodModeRequestTests.exe
 .\build\native_module\Game__Shipping__Win64\OpenScumCommandAuthorityTests.exe
+.\build\native_module\Game__Shipping__Win64\OpenScumDispatchInfrastructureTests.exe
 ```
 
 Das Modul entsprechend der UE4SS-Struktur für native Mods als

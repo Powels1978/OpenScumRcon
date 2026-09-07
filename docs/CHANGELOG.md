@@ -4,6 +4,25 @@
 
 ## English
 
+### 2026-09-07 — Registry dispatch, native replies and player list
+
+Added `!commands [filter]`, `!exec <SteamID> <command> [arguments...]` and independent
+`ListPlayers`. Native execution uses checked registry metadata and an explicit
+connected player context. Synchronous replies are captured for the exact command;
+foreign replies pass through. Direct GodMode now appends SCUM's text to verified
+state. Removed the ineffective RPC fallback. Added quoted argument parsing,
+metadata/build/vtable guards and a generic native exception latch. RCON response
+payloads are limited to 4,086 bytes at UTF-8 boundaries; malformed terminators and
+embedded NUL payload bytes are rejected.
+
+Validation: Shipping build, 90 compatible UE4SS imports, parser/authority/queue and
+new infrastructure tests. Live tests passed for the 233-entry catalogue
+(185 candidates), empty/occupied player lists, client parsing, rejected
+authentication/arguments, non-admin GodMode on/off, native server-time replies and
+foreign Herbie replies. GodMode was restored, Immortality and chat rights were
+unchanged, and the server remained stable. Herbie stayed loaded. Other candidates,
+a playerless executor and complete client compatibility remain unvalidated or open.
+
 ### 2026-09-06 — English and German publication standard
 
 Expanded the README, architecture, changelog, references and configuration example
@@ -48,6 +67,26 @@ logs and environment-specific notes are excluded from the public tree.
 ---
 
 ## Deutsch
+
+### 2026-09-07 — Registry-Ausführung, native Antworten und Spielerliste
+
+`!commands [filter]`, `!exec <SteamID> <command> [arguments...]` und eigenständiges
+`ListPlayers` ergänzt. Native Ausführung verwendet geprüfte Registry-Metadaten und
+einen expliziten verbundenen Spielerkontext. Synchrone Antworten werden für den
+genauen Befehl erfasst; fremde Antworten durchgelassen. Direktes GodMode ergänzt
+den geprüften Zustand um SCUMs Text. Wirkungslosen RPC-Pfad entfernt.
+Zitierte Argumente, Metadaten-/Build-/Vtable-Prüfungen und eine Sperre nach allgemeiner
+nativer Ausnahme ergänzt. RCON-Antwortnutzdaten sind an UTF-8-Grenzen auf 4.086 Bytes
+begrenzt; fehlerhafte Terminatoren und eingebettete NUL-Nutzdaten werden abgewiesen.
+
+Prüfungen: Shipping-Build, 90 kompatible UE4SS-Importe, Parser-/Berechtigungs-/Queue-
+und neue Infrastrukturtests. Live bestanden: Katalog mit 233 Einträgen
+(185 Kandidaten), leere/belegte Spielerlisten, Client-Parser, abgewiesene
+Anmeldungen/Argumente, Nicht-Admin-GodMode an/aus, native Serverzeit-Antworten und
+fremde Herbie-Antworten. GodMode wurde zurückgesetzt, Immortality und Chatrechte
+blieben unverändert, der Server stabil. Herbie blieb geladen. Andere Kandidaten,
+Executor ohne Online-Spieler und vollständige Client-Kompatibilität sind ungeprüft
+beziehungsweise offen.
 
 ### 2026-09-06 — Veröffentlichungen auf Englisch und Deutsch
 

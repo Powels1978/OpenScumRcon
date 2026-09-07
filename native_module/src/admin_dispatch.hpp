@@ -1,31 +1,7 @@
 #pragma once
 
-// Resolves and calls SCUM's admin-command entry point.
-//
-// HISTORY: originally targeted UMiscStatics::Test_ProcessAdminCommand
-// (UObject* WorldContextObject, FString commandText) - a Blueprint-callable
-// static helper found during the initial reflection scan. Confirmed via
-// disassembly on 2026-09-06 to be an empty stub (a single `ret` instruction)
-// in the Shipping build - it does nothing at all, regardless of arguments or
-// authorization. See docs/research/2026-09-05-authorization-gate-analysis.md,
-// "Update 2026-09-06", and docs/ARCHITECTURE.md.
-//
-// GodMode now uses the dedicated native dispatcher (godmode_dispatch.cpp).
-// The following describes only the historical fallback for other commands:
-// PREVIOUS APPROACH (2026-09-06): call the production RPC -
-//
-//   UPlayerRpcChannel::Chat_Server_ProcessAdminCommand(FString commandText)
-//
-// - the same entry point a connected admin's own "#command" chat message
-// triggers. PlayerRpcChannel is a UActorComponent attached to
-// ConZPlayerController (default subobject named "PlayerRpcChannel"); the
-// live instance is fetched via the connected player's PlayerController
-// (find_admin_context_object()) rather than a fresh UObject scan, since a
-// scan can't distinguish which of several connected players' channels to
-// use. Server RPCs called via ProcessEvent from code that already has
-// server authority execute their _Implementation directly (no actual
-// network round-trip) - this module runs inside the dedicated server
-// process, so that should apply here.
+// Authenticated game-thread routing for verified GodMode, ListPlayers,
+// the live command catalogue, and explicit-context native commands.
 
 #include <string>
 #include "command_authority.hpp"
@@ -49,17 +25,8 @@ namespace openscumrcon
         // that case rather than silently no-op every command.
         bool initialize();
 
-        // Must only be called from the game thread (e.g. from the EngineTick
-        // pre-hook that drains CommandQueue). Strips a leading '#' the same
-        // way local_bridge's SourceRcon.run() does before dispatch.
-        //
-        // GodMode returns a native-result and player-state-verified response.
-        // For other commands, the return value remains a placeholder, NOT SCUM's
-        // real response text - see the "Rueckgabeformat" open item in
-        // docs/ARCHITECTURE.md. The underlying UFunction returns no value
-        // over the Lua calling convention we probed; whether it is reachable
-        // as a real return parameter from C++ is one of the first things to
-        // check once this can be tested live.
+        // Game thread only. Unknown commands are rejected; no ineffective RPC fallback.
+        // !exec uses a registered command with an explicit connected player context.
         std::string dispatch_command(const std::string& raw_command_text, CommandAuthority authority = CommandAuthority::none);
 
         // Diagnostic (2026-09-05): reads the raw permission-level byte

@@ -1,5 +1,6 @@
 #include "admin_dispatch.hpp"
 #include "godmode_dispatch.hpp"
+#include "registry_dispatch.hpp"
 
 #include <cstdint>
 #include <fstream>
@@ -113,94 +114,9 @@ namespace openscumrcon
     std::string AdminDispatch::dispatch_command(const std::string& raw_command_text, CommandAuthority authority)
     {
         if (!is_rcon_authorized(authority)) return "error: authenticated RCON connection required";
+        if (!m_initialized) return "error: AdminDispatch not initialized";
         if (auto reply = godmode::dispatch(raw_command_text, authority)) return *reply;
-
-        if (!m_initialized)
-        {
-            return "error: AdminDispatch not initialized";
-        }
-
-        std::string command_text = raw_command_text;
-        // Trim and strip a leading '#', mirroring SourceRcon.run() in
-        // existing Source RCON clients so behaviour matches what
-        // callers of the existing client already expect.
-        const auto first = command_text.find_first_not_of(" \t\r\n");
-        if (first == std::string::npos)
-        {
-            return "error: empty command";
-        }
-        command_text = command_text.substr(first);
-        if (!command_text.empty() && command_text.front() == '#')
-        {
-            command_text.erase(0, 1);
-        }
-        const auto last = command_text.find_last_not_of(" \t\r\n");
-        command_text = command_text.substr(0, last + 1);
-
-        if (!m_chat_server_process_admin_command)
-        {
-            return "error: Chat_Server_ProcessAdminCommand not resolved (see UE4SS.log at startup)";
-        }
-
-        UObject* context_object = find_admin_context_object();
-        if (!context_object || !context_object->IsA(m_player_controller_class))
-        {
-            // Test_ProcessAdminCommand's GameInstance fallback is gone along
-            // with that dead code path - Chat_Server_ProcessAdminCommand only
-            // exists on a connected player's own PlayerRpcChannel component,
-            // so without a real PlayerController there is nothing to call.
-            return "error: no connected player found (Chat_Server_ProcessAdminCommand needs a real PlayerController)";
-        }
-
-        // PlayerRpcChannel is a default subobject (component), not exposed
-        // through a plain named UPROPERTY reference on ConZPlayerController
-        // (confirmed 2026-09-06: GetPropertyByName(STR("PlayerRpcChannel"))
-        // returns nullptr) - find the live instance by matching its Outer to
-        // our chosen PlayerController instead. Cheap: IsA() first (pointer-
-        // chain walk), pointer comparison second, no string work per object -
-        // same safe pattern as dump_player_rpc_channel_info().
-        UObject* rpc_channel = nullptr;
-        if (m_player_rpc_channel_class)
-        {
-            UObjectGlobals::ForEachUObject([&](UObject* object, ...) -> RC::LoopAction {
-                if (!object || object->IsUnreachable())
-                {
-                    return RC::LoopAction::Continue;
-                }
-                if (object->IsA(m_player_rpc_channel_class) && object->GetOuterPrivate() == context_object)
-                {
-                    rpc_channel = object;
-                    return RC::LoopAction::Break;
-                }
-                return RC::LoopAction::Continue;
-            });
-        }
-        if (!rpc_channel)
-        {
-            return "error: no PlayerRpcChannel component found on this PlayerController";
-        }
-
-        // Chat_Server_ProcessAdminCommand is the handler for a real player's
-        // raw chat message - it almost certainly expects the same text the
-        // in-game chat box would send, leading '#' included (unlike the dead
-        // Test_ProcessAdminCommand path, which took a pre-stripped command).
-        // First attempt (2026-09-06) sent the stripped text and completed
-        // without error but with no visible effect - untested hypothesis:
-        // the handler silently no-ops on anything not starting with '#'.
-        struct Params
-        {
-            FString commandText{};
-        } params;
-        params.commandText = FString(RC::to_wstring("#" + command_text));
-
-        rpc_channel->ProcessEvent(m_chat_server_process_admin_command, &params);
-
-        // See docs/ARCHITECTURE.md: the real response text (what Herbie's
-        // RCON returns, e.g. "God mode set to true.") is not known to come
-        // back through this call at all - Herbie's own log shows he captures
-        // it via a separate chat-line detour hook, not a return value. Until
-        // that is solved, report only whether the call itself completed.
-        return "ok: dispatched via PlayerRpcChannel::Chat_Server_ProcessAdminCommand";
+        return registry::dispatch(raw_command_text, authority);
     }
 
     std::string AdminDispatch::dump_admin_command_permission_levels() const

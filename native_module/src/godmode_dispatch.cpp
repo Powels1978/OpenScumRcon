@@ -1,6 +1,7 @@
 #include "godmode_dispatch.hpp"
 #include "godmode_request.hpp"
 #include "godmode_trace.hpp"
+#include "response_capture.hpp"
 #include <cstdint>
 #include <cstring>
 #include <sstream>
@@ -174,6 +175,9 @@ std::optional<std::string> dispatch(const std::string& text, CommandAuthority au
     if (request.action == Action::prepare)
         return "ok: prepared SetGodMode_C; authority=authenticated_rcon outer=target_controller steam_id=" + request.steam_id + " " + before + chat_diagnostic + " executed=false";
 
+    if (!response_capture::ready() || slot(instance, 0x290) != response_capture::function_address())
+        return "error: native response capture unavailable; GodMode was not executed";
+    ResponseScope capture(instance);
     FString value(request.enabled ? STR("true") : STR("false"));
     Arguments args{&value, 1, 1};
     const bool old_immortal = player.immortal->GetPropertyValueInContainer(player.pawn);
@@ -186,7 +190,10 @@ std::optional<std::string> dispatch(const std::string& text, CommandAuthority au
     if (!result || player.god->GetPropertyValueInContainer(player.pawn) != request.enabled ||
         player.immortal->GetPropertyValueInContainer(player.pawn) != old_immortal)
         return "error: native GodMode result/state verification failed; " + after;
-    // Our own verified reply, not a claim to have captured SCUM's chat response.
-    return "ok: native SetGodMode verified; steam_id=" + request.steam_id + " " + after;
+    std::string reply = "ok: native SetGodMode verified; steam_id=" + request.steam_id + " " + after;
+    if (!capture.text().empty()) reply += "\n" + capture.text();
+    if (capture.has_failed()) reply += "\nwarning: state verified but native reply capture failed";
+    if (capture.truncated()) reply += "\n[response truncated]";
+    return reply;
 }
 }
